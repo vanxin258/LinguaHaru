@@ -111,7 +111,7 @@ def check_same_ok(model, api_key, src="en", dst="zh", doc_name=None):
 
 
 # ------------------------------------------------------------- resegment --
-def build_asr_style_srt(source_srt, target, cuts_per_cue=3):
+def build_asr_style_srt(source_srt, target, cuts_per_cue=3, max_cues=None):
     """Re-cut a known-good SRT into ASR-style fixed-ish chunks, so the correct
     answer is known and the model can be scored against it."""
     from core.pipelines.subtitle_translation_pipeline import parse_srt_cues
@@ -126,6 +126,8 @@ def build_asr_style_srt(source_srt, target, cuts_per_cue=3):
 
     lines, index, truth = [], 0, []
     for cue in parse_srt_cues(str(source_srt)):
+        if max_cues is not None and len(truth) >= max_cues:
+            break
         text = cue["value"].replace("␊", " ").replace("␍", " ")
         words = text.split()
         start_ms = int(seconds(cue["start_time"]) * 1000)
@@ -148,7 +150,7 @@ def build_asr_style_srt(source_srt, target, cuts_per_cue=3):
     return len(truth), index, truth
 
 
-def check_resegment(model, api_key, src="en", dst="zh"):
+def check_resegment(model, api_key, src="en", dst="zh", max_cues=40):
     """Feed an ASR-style SRT in and see whether the model puts the boundaries
     back where they belong — the known-good cue grouping is the answer key."""
     good = REPO_ROOT / "result" / "8月25日 1_en2en_resegmented.srt"
@@ -158,8 +160,9 @@ def check_resegment(model, api_key, src="en", dst="zh"):
     work = WORK / "resegment"
     work.mkdir(parents=True, exist_ok=True)
     asr_srt = work / "asr_style.srt"
-    groups, cue_count, truth = build_asr_style_srt(good, asr_srt)
-    print(f"参考字幕 {groups} 条 -> 切成 ASR 风格 {cue_count} 条")
+    groups, cue_count, truth = build_asr_style_srt(
+        good, asr_srt, max_cues=max_cues)
+    print(f"参考字幕取前 {groups} 条 -> 切成 ASR 风格 {cue_count} 条")
     print(f"输入:{asr_srt}\n")
 
     from core import backend
@@ -187,8 +190,27 @@ def check_resegment(model, api_key, src="en", dst="zh"):
         for a, b in zip(result_cues, result_cues[1:])
     )
     print(f"\n时间轴严格有序不重叠:{'是' if ordered else '否'}")
-    print(f"输出:{out}")
-    return cue_count, len(result_cues), groups, ordered
+
+    # Score against the answer key by BOUNDARY, not text: the output is the
+    # translation, so its words differ by design. The reference's cue timings are
+    # what a correct resegmentation should reproduce.
+    def flat(text):
+        return re.sub(r"\s+", " ", text.replace("␊", " ").replace("␍", " ")).strip()
+
+    reference = parse_srt_cues(str(good))[:groups]
+    produced = {(c["start_time"], c["end_time"]) for c in result_cues}
+    matched = sum(1 for c in reference
+                  if (c["start_time"], c["end_time"]) in produced)
+    print(f"与参考答案边界吻合:{matched}/{len(reference)}")
+    if matched < len(reference):
+        for cue in reference:
+            if (cue["start_time"], cue["end_time"]) not in produced:
+                print(f"  边界不同: 参考 {cue['start_time']} --> {cue['end_time']}  "
+                      f"{flat(cue['value'])[:44]!r}")
+                break
+
+    print(f"\n输出:{out}")
+    return cue_count, len(result_cues), groups, ordered, matched
 
 
 def main():
