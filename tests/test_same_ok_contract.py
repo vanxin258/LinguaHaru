@@ -114,13 +114,18 @@ class ProcessTranslationResultsTests(unittest.TestCase):
 
 
 class PromptContractTests(unittest.TestCase):
-    """Every translation prompt must ask for the object shape, or the checker's
+    """Every TRANSLATION prompt must ask for the object shape, or the checker's
     same_ok handling silently never fires."""
+
+    # Auxiliary profiles that are not translation prompts: they run their own
+    # pass with their own contract.
+    AUXILIARY = {"subtitle_resegment"}
 
     def test_all_prompts_request_same_ok(self):
         prompts_dir = Path(__file__).resolve().parents[1] / "config" / "prompts"
-        prompts = [p for p in prompts_dir.glob("*.json")]
-        self.assertTrue(prompts)
+        prompts = [p for p in prompts_dir.glob("*.json")
+                   if p.stem not in self.AUXILIARY]
+        self.assertGreater(len(prompts), 10, "expected the language prompt set")
         for path in prompts:
             with self.subTest(prompt=path.name):
                 data = json.loads(path.read_text(encoding="utf-8"))

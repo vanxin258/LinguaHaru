@@ -391,6 +391,8 @@
   "Translation Color": "訳文の色",
   "Bilingual Separator": "バイリンガル：区切り文字",
   "Bilingual Separator Tip": "Word のバイリンガル出力で原文と訳文の間に挿入する文字（\n は改行、\t はタブ）。",
+  "Subtitle Resegment": "SRT：字幕を再分割",
+  "Subtitle Resegment Tip": "SRT を翻訳する前に、モデルに字幕の区切り位置を決めさせます。音声認識の字幕は文末ではなく一定間隔で切られているためです。タイムコードは元の字幕から再計算され、モデルはタイムスタンプを生成しません。",
   "Source Color": "原文の色…",
   "Caption Font": "フォント / スタイル / サイズ…",
   "Reset Style": "既定に戻す",

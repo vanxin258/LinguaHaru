@@ -431,6 +431,8 @@
   "Translation Color": "譯文顏色",
   "Bilingual Separator": "雙語對照：分隔符",
   "Bilingual Separator Tip": "Word 雙語對照輸出時，原文與譯文之間插入的文字（\n 表示換行，\t 表示定位字元）。",
+  "Subtitle Resegment": "SRT 字幕重新斷句",
+  "Subtitle Resegment Tip": "翻譯 SRT 前先讓模型決定字幕分句位置 —— 語音辨識的字幕是依固定間隔切的，不是依句子切的。時間軸由程式依來源字幕重新計算，模型不會產生時間戳。",
   "Source Color": "原文顏色…",
   "Caption Font": "字型 / 字形 / 字級…",
   "Reset Style": "恢復預設",

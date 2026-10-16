@@ -18,11 +18,17 @@ def _lang_name(code, source=False):
     return _CODE_TO_NAME.get(code, code)
 
 
-def load_prompt(src_lang, dst_lang):
-    """Load the translation prompt from a JSON file based on the target language."""
+def load_prompt(src_lang, dst_lang, prompt_code_override=None):
+    """Load the translation prompt from a JSON file based on the target language.
+
+    prompt_code_override names a different prompt profile by file (e.g.
+    "subtitle_resegment") instead of the target language's translation prompt.
+    Such profiles are self-contained, so the translation-mode / tone / length /
+    style modifiers are not appended to them.
+    """
     # The prompt template lives in the TARGET language's file. Source may be
     # "auto" (auto-detect); target is always concrete (fall back to en if not).
-    lang_code = dst_lang if dst_lang and dst_lang != "auto" else "en"
+    lang_code = prompt_code_override or (dst_lang if dst_lang and dst_lang != "auto" else "en")
     prompt_path = os.path.join(PROMPTS_DIR, f"{lang_code}.json")
 
     with open(prompt_path, "r", encoding="utf-8") as file:
@@ -49,6 +55,10 @@ def load_prompt(src_lang, dst_lang):
         system_prompt = (system_prompt
                          .replace("{Text_Target_Language}", _lang_name(dst_lang))
                          .replace("{Text_Source_Language}", src_name))
+
+        if prompt_code_override:
+            return (system_prompt, user_prompt, previous_prompt,
+                    previous_text_default, glossary_prompt)
 
         # Append the active mode's behavior hint + advanced (tone/length/style)
         # modifiers — all taken from the TARGET-language prompt file so no English

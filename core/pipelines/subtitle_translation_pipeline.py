@@ -38,16 +38,14 @@ def _srt_info(cue):
     return (flat(v), seconds(cue["start_time"]), seconds(cue["end_time"]), solo, None)
 
 
-def extract_srt_content_to_json(file_path, temp_dir):
-    """
-    Extract subtitles from an SRT file and save them in a JSON format.
+def parse_srt_cues(file_path):
+    """Raw cues in file order, with their timings and position coordinates.
+
+    Tolerant of common SRT variants: 1-3 digit hours, '.' as millisecond
+    separator, 1-3 millisecond digits. The numeric index line is optional (some
+    files omit it); the timestamp line is the reliable anchor.
     """
     srt_content = _read_srt_text(file_path)
-
-    # Tolerant of common SRT variants: 1-2 digit hours, '.' as millisecond
-    # separator, 1-3 millisecond digits. The numeric index line is optional
-    # (some files omit it); the timestamp line is the reliable anchor, and we
-    # renumber sequentially anyway.
     srt_pattern = re.compile(
         r"(?:\d+\s*\r?\n)?"
         r"(\d{1,3}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*"      # 1-3 digit hours
@@ -77,6 +75,14 @@ def extract_srt_content_to_json(file_path, temp_dir):
             f"SRT parse mismatch: file contains {cue_count} cues but only "
             f"{len(cues)} were extracted; unparsed cues will be missing from the output"
         )
+    return cues
+
+
+def extract_srt_content_to_json(file_path, temp_dir):
+    """
+    Extract subtitles from an SRT file and save them in a JSON format.
+    """
+    cues = parse_srt_cues(file_path)
 
     # One translation unit per SENTENCE GROUP, not per cue. Real captions split a
     # sentence over 2-3 timed cues; sent as separate ids the model merges the

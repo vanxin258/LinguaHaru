@@ -636,6 +636,7 @@ async function boot() {
   if ($("set-bi-bold")) $("set-bi-bold").checked = c.bilingual_bold !== false;
   if ($("set-bi-color")) $("set-bi-color").value = c.bilingual_color || "";
   if ($("set-bi-sep")) $("set-bi-sep").value = String(c.bilingual_separator ?? "\n").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+  if ($("set-sub-reseg")) $("set-sub-reseg").checked = c.subtitle_resegment_mode === true;
   if ($("set-live-stream")) $("set-live-stream").checked = !!c.live_stream_translation;
   if ($("set-web-vad")) $("set-web-vad").value = c.web_vad || "energy";
   if ($("set-vad-hang")) $("set-vad-hang").value = String(c.live_vad_hang_ms || 900);
@@ -1557,6 +1558,7 @@ if ($("set-image-lama")) $("set-image-lama").onchange = async () => {
 if ($("set-bi-bold")) $("set-bi-bold").onchange = () => saveConfig({ bilingual_bold: $("set-bi-bold").checked });
 if ($("set-bi-color")) $("set-bi-color").onchange = () => saveConfig({ bilingual_color: $("set-bi-color").value });
 if ($("set-bi-sep")) $("set-bi-sep").onchange = () => saveConfig({ bilingual_separator: $("set-bi-sep").value });
+if ($("set-sub-reseg")) $("set-sub-reseg").onchange = () => saveConfig({ subtitle_resegment_mode: $("set-sub-reseg").checked });
 if ($("set-live-stream")) $("set-live-stream").onchange = () => {
   const v = $("set-live-stream").checked;
   if (BOOT.config) BOOT.config.live_stream_translation = v;   // applies without reload

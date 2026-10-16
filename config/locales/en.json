@@ -422,6 +422,8 @@
   "Translation Color": "Translation color",
   "Bilingual Separator": "Bilingual: separator",
   "Bilingual Separator Tip": "Text placed between the original and the translation in Word bilingual output (\n = line break, \t = tab).",
+  "Subtitle Resegment": "SRT: resegment subtitles",
+  "Subtitle Resegment Tip": "Before translating an SRT, ask the model where the cue boundaries should be — speech-recognition captions are cut at fixed intervals, not at sentence ends. Timings are recomputed from the source cues; the model never invents a timestamp.",
   "Translation Mode": "Translation mode",
   "Thanks Title": "Thank you for using LinguaHaru",
   "Thanks Tokens Label": "Tokens used",

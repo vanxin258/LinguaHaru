@@ -518,6 +518,7 @@ def bootstrap():
             "ocr_model_size": get_selected_ocr_model(),
             "translate_subtitles": config.get("translate_subtitles", True),
             "subtitle_match_source_name": config.get("subtitle_match_source_name", True),
+            "subtitle_resegment_mode": config.get("subtitle_resegment_mode", False),
             "max_retries": config.get("max_retries", 4),
             # Show the RPM that's actually in effect: an explicit user value, or
             # the safety-net default when unset (so the UI isn't misleading).
@@ -664,6 +665,7 @@ async def update_config(payload: dict):
                "default_dst_lang", "default_glossary", "stt_model",
                "live_stt_model", "quick_stt_model", "ocr_model_size",
                "translate_subtitles", "subtitle_match_source_name",
+               "subtitle_resegment_mode",
                "max_retries", "rpm_limit",
                "auto_extract_glossary", "translation_mode",
                "translation_tone", "translation_length", "translation_style",

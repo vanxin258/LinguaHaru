@@ -433,6 +433,8 @@
   "Translation Color": "译文颜色",
   "Bilingual Separator": "双语对照：分隔符",
   "Bilingual Separator Tip": "Word 双语对照输出时，原文与译文之间插入的文字（\n 表示换行，\t 表示制表符）。",
+  "Subtitle Resegment": "SRT 字幕重新断句",
+  "Subtitle Resegment Tip": "翻译 SRT 前先让模型决定字幕分句位置 —— 语音识别的字幕是按固定间隔切的，不是按句子切的。时间轴由程序根据源字幕重新计算，模型不会生成时间戳。",
   "Translation Mode": "翻译模式",
   "Thanks Title": "感谢使用 LinguaHaru",
   "Thanks Tokens Label": "本次消耗",

@@ -159,7 +159,15 @@ def get_translator_class(
         return partial(translator_class, bilingual_mode=word_bilingual_mode)
     if ext == ".pdf":
         return partial(translator_class, word_bilingual_mode=pdf_bilingual_mode)
-    if ext in (".srt", ".vtt"):
+    if ext == ".srt":
+        # Resegmentation is an opt-in enhancement read straight from config
+        # rather than threaded through both frontends as another flag.
+        if read_config().get("subtitle_resegment_mode", False):
+            return partial(translator_class,
+                           bilingual_mode=subtitle_bilingual_mode,
+                           subtitle_resegment_mode=True)
+        return partial(translator_class, bilingual_mode=subtitle_bilingual_mode)
+    if ext == ".vtt":
         return partial(translator_class, bilingual_mode=subtitle_bilingual_mode)
     if ext == ".txt":
         return partial(translator_class, bilingual_mode=txt_bilingual_mode)
@@ -237,6 +245,11 @@ _DEFAULT_CONFIG = {
     "word_bilingual_mode": False,
     "pdf_bilingual_mode": False,
     "subtitle_bilingual_mode": False,
+    # SRT only: ask the model where the cue boundaries should be before
+    # translating (speech-recognition captions are cut at fixed intervals, not at
+    # sentence ends). See core.pipelines.subtitle_resegment. Off => the original
+    # cue boundaries are kept.
+    "subtitle_resegment_mode": False,
     "txt_bilingual_mode": False,
     "md_bilingual_mode": False,
     "epub_bilingual_mode": False,

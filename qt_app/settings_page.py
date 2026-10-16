@@ -470,6 +470,13 @@ class SettingsPage(ScrollArea):
             lambda: backend.set_config("bilingual_separator", self.bi_sep.text()))
         self.bi_sep_label = BodyLabel(tr("Bilingual Separator", lang))
         gl_form.addRow(self.bi_sep_label, self.bi_sep)
+        # SRT only: let the model move the cue boundaries before translating.
+        self.sub_reseg = SwitchButton()
+        self.sub_reseg.setChecked(config.get("subtitle_resegment_mode", False))
+        self.sub_reseg.checkedChanged.connect(
+            lambda v: backend.set_config("subtitle_resegment_mode", v))
+        self.sub_reseg_label = BodyLabel(tr("Subtitle Resegment", lang))
+        gl_form.addRow(self.sub_reseg_label, self.sub_reseg)
         self.live_stream = SwitchButton()
         self.live_stream.setChecked(config.get("live_stream_translation", False))
         self.live_stream.checkedChanged.connect(
