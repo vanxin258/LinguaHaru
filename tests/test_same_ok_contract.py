@@ -113,6 +113,64 @@ class ProcessTranslationResultsTests(unittest.TestCase):
         self.assertNotIn("same_ok", items[0])
 
 
+class DedupRestoreTests(unittest.TestCase):
+    """same_ok must survive the dedup -> restore round trip. It did not: the
+    restore step rebuilt each entry from a plain {count_split: text} map, so the
+    flag was dropped and write-back never skipped anything."""
+
+    def _restore(self, split_items, deduped_split, original, mapping):
+        from core.engine.text_separator import restore_translations_from_deduped
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "dst_translated_split.json").write_text(
+                json.dumps(split_items, ensure_ascii=False), encoding="utf-8")
+            (root / "src_deduped_split.json").write_text(
+                json.dumps(deduped_split, ensure_ascii=False), encoding="utf-8")
+            (root / "src.json").write_text(
+                json.dumps(original, ensure_ascii=False), encoding="utf-8")
+            out = restore_translations_from_deduped(
+                str(root / "dst_translated_split.json"), mapping, str(root / "src.json"))
+            return json.loads(Path(out).read_text(encoding="utf-8"))
+
+    def test_flag_survives_a_marked_item(self):
+        result = self._restore(
+            split_items=[{"count_split": 1, "translated": "AA-00037.2.00", "same_ok": True}],
+            deduped_split=[{"count_deduped": 1, "count_split": 1}],
+            original=[{"count_src": 1, "value": "AA-00037.2.00", "type": "text"}],
+            mapping={1: 1},
+        )
+        self.assertEqual(result[0]["translated"], "AA-00037.2.00")
+        self.assertIs(result[0].get("same_ok"), True)
+
+    def test_unmarked_item_carries_no_flag(self):
+        result = self._restore(
+            split_items=[{"count_split": 1, "translated": "你好"}],
+            deduped_split=[{"count_deduped": 1, "count_split": 1}],
+            original=[{"count_src": 1, "value": "Hello", "type": "text"}],
+            mapping={1: 1},
+        )
+        self.assertEqual(result[0]["translated"], "你好")
+        self.assertNotIn("same_ok", result[0])
+
+    def test_flag_needs_every_chunk_of_a_split_item(self):
+        """A deduped item cut into chunks is only same_ok if no chunk was
+        actually translated."""
+        original = [{"count_src": 1, "value": "part one part two", "type": "text"}]
+        deduped = [{"count_deduped": 1, "count_split": 1},
+                   {"count_deduped": 1, "count_split": 2}]
+        both = self._restore(
+            split_items=[{"count_split": 1, "translated": "part one", "same_ok": True},
+                         {"count_split": 2, "translated": "part two", "same_ok": True}],
+            deduped_split=deduped, original=original, mapping={1: 1})
+        self.assertIs(both[0].get("same_ok"), True)
+
+        mixed = self._restore(
+            split_items=[{"count_split": 1, "translated": "part one", "same_ok": True},
+                         {"count_split": 2, "translated": "第二部分"}],
+            deduped_split=deduped, original=original, mapping={1: 1})
+        self.assertNotIn("same_ok", mixed[0])
+
+
 class PromptContractTests(unittest.TestCase):
     """Every TRANSLATION prompt must ask for the object shape, or the checker's
     same_ok handling silently never fires."""

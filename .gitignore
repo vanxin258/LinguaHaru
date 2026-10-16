@@ -72,3 +72,4 @@ backup/
 # 验收用真实文档(公司资料,不入库)
 tests/acceptance/fixtures/
 tests/acceptance/_work/
+tests/acceptance/_real/
