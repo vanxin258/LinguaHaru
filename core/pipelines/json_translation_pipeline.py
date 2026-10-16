@@ -15,6 +15,7 @@ from .skip_pipeline import should_translate
 from .txt_translation_pipeline import read_file_with_encoding
 from core.log_config import app_logger
 from core.paths import SYSTEM_CONFIG
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 # Keys whose values are machine identifiers / formatting, not human content.
 DEFAULT_SKIP_KEYS = {
@@ -110,7 +111,7 @@ def write_translated_content_to_json(file_path, original_json_path, translated_j
     with open(translated_json_path, encoding="utf-8") as f:
         translated_data = json.load(f)
 
-    translations = {item["count_src"]: item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data, stringify_keys=False)
 
     for item in original_data:
         translated = translations.get(item["count_src"])

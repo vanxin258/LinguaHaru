@@ -27,6 +27,7 @@ _TOKEN_RE = re.compile(
 
 from .skip_pipeline import should_translate
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 # Block-level elements whose text is translated as one unit
 BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th",
@@ -542,7 +543,7 @@ def write_translated_content_to_epub(file_path, original_json_path, translated_j
     with open(translated_json_path, encoding="utf-8") as f:
         translated_data = json.load(f)
 
-    translations = {item["count_src"]: item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data, stringify_keys=False)
 
     # Group items per content document; OPF/NCX items are keyed by member name
     items_by_doc = {}

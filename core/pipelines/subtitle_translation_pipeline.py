@@ -6,6 +6,7 @@ from .subtitle_formats_pipeline import subtitle_result_path
 from .subtitle_groups import (
     drop_fabricated_tags, flat, group_cues, join_texts, seconds, split_across_cues)
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 
 def _read_srt_text(file_path):
@@ -123,7 +124,7 @@ def write_translated_content_to_srt(file_path, original_json_path, translated_js
     with open(translated_json_path, "r", encoding="utf-8") as translated_file:
         translated_data = json.load(translated_file)
 
-    translations = {str(item["count_src"]): item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data)
 
     output_srt_lines = []
     count = 0

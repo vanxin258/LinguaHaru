@@ -3,6 +3,7 @@ import os
 import chardet
 from .skip_pipeline import should_translate
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 def read_file_with_encoding(file_path):
     """
@@ -192,7 +193,7 @@ def write_translated_content_to_txt(file_path, original_json_path, translated_js
         raise
 
     # Create translation map
-    translation_map = {item["count_src"]: item["translated"] for item in translated_data}
+    translation_map = build_writeback_translation_map(translated_data, stringify_keys=False)
 
     # Create output file
     result_folder = result_dir

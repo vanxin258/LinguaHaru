@@ -290,7 +290,85 @@ def _batch_misaligned(pairs):
     return False
 
 
-def is_translation_valid(original, translated, src_lang, dst_lang):
+def normalize_text_value(value):
+    """Coerce a model/source value into a stripped string.
+
+    The model may answer with either a bare string (legacy shape) or the
+    {"translation": ..., "same_ok": ...} object; anything else (null, number,
+    list) becomes "" so one bad id can never crash the whole batch."""
+    if isinstance(value, dict):
+        if "translation" in value:
+            value = value.get("translation")
+        elif "value" in value:
+            value = value.get("value")
+        else:
+            value = ""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    return value.strip()
+
+
+def extract_translation_result(translated_json, key):
+    """(translated text, same_ok flag) for one id of the model's reply."""
+    raw = translated_json.get(key, "") if isinstance(translated_json, dict) else ""
+    same_ok = bool(raw.get("same_ok", False)) if isinstance(raw, dict) else False
+    return normalize_text_value(raw), same_ok
+
+
+# Things that may legitimately stay untranslated. Deliberately structural, not
+# semantic: same_ok is the model's opinion, and honoring it wrongly ships the
+# original untranslated and silently. Prose fails these and is validated normally.
+_SAME_OK_URL = re.compile(r"^(?:https?://|ftp://|mailto:|www\.)\S+$", re.IGNORECASE)
+_SAME_OK_EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_SAME_OK_PATH = re.compile(r"^(?:[A-Za-z]:)?[\\/][^\s]*$")
+_SAME_OK_FILENAME = re.compile(r"^[\w\-. ]+\.[A-Za-z0-9]{1,5}$")
+_SAME_OK_SENTENCE_PUNCT = re.compile(r"[.!?;:。！？；：、]")
+
+
+def _plausible_same_ok(text):
+    """Whether text may legitimately be left as-is.
+
+    The safety net under the model's same_ok flag: a claim that this is
+    non-translatable only counts when the text looks like it. Anything
+    sentence-like is rejected and goes through normal validation, so a wrong
+    claim degrades to today's behaviour (retry / needs_review) instead of
+    silently shipping untranslated prose.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    # No letters at all: digits, symbols, punctuation.
+    if not re.search(r"[^\W\d_]", t, re.UNICODE):
+        return True
+    if _SAME_OK_URL.match(t) or _SAME_OK_EMAIL.match(t):
+        return True
+    if _SAME_OK_PATH.match(t) or _SAME_OK_FILENAME.match(t):
+        return True
+    # Identifier-shaped: short, no sentence punctuation, few words, and either
+    # carries a digit or is an all-caps token (model / part / section number).
+    if len(t) <= 40 and not _SAME_OK_SENTENCE_PUNCT.search(t):
+        words = t.split()
+        if len(words) <= 3 and (re.search(r"\d", t) or t.isupper()):
+            return True
+    return False
+
+
+def _success_item(key, original, translated, same_ok):
+    """A result entry. same_ok marks an item the model kept as-is; write-back
+    skips those so the original text and its formatting survive untouched."""
+    item = {
+        "count_split": int(key),
+        "original": original,
+        "translated": translated,
+    }
+    if same_ok:
+        item["same_ok"] = True
+    return item
+
+
+def is_translation_valid(original, translated, src_lang, dst_lang, same_ok=False):
     """
     Check if translation is valid
     """
@@ -324,8 +402,13 @@ def is_translation_valid(original, translated, src_lang, dst_lang):
     #  (a) a source with no translatable letters at all (numbers / symbols, "100%");
     #  (b) a whole-string URL / email (has letters but is machine content).
     # Brand/acronym ambiguity ("GPT-4") is intentionally NOT covered — it stays
-    # echo-failed -> needs_review (safe), since some targets do localize it.
+    # echo-failed -> needs_review (safe), since some targets do localize it,
+    # UNLESS the model explicitly claimed same_ok and _plausible_same_ok vouched
+    # for the text (see the caller), which is how that ambiguity gets resolved
+    # without a human.
     _o = (original or "").strip()
+    if same_ok:
+        return True
     if not re.search(r"[^\W\d_]", _o, re.UNICODE):
         return True
     if re.match(r"^(?:https?://|ftp://|mailto:|www\.)\S+$", _o, re.IGNORECASE) or \
@@ -401,16 +484,31 @@ def process_translation_results(original_text, translated_text, SRC_SPLIT_JSON_P
     # with its neighbour's text. Fail the batch; retry rounds re-chunk smaller
     # and the last round goes one id per call (where this can't trigger).
     if isinstance(translated_json, dict) and _batch_misaligned(
-            [(str(v), translated_json.get(k) if isinstance(translated_json.get(k), str) else "")
+            [(str(v), normalize_text_value(translated_json.get(k)))
              for k, v in original_json.items()]):
         app_logger.warning(f"Batch looks shifted/merged across ids "
                            f"({len(original_json)} items); retrying smaller")
         _mark_all_as_failed(original_text, FAILED_JSON_PATH)
         return {}
 
-    # Check if all identical (not last try)
+    # Check if all identical (not last try). The model may answer with the object
+    # shape, so compare normalized texts rather than the raw JSON — otherwise
+    # "echoed the whole batch" would stop being detected.
     if not last_try:
-        if translated_json == original_json:
+        _all_unchanged = (
+            isinstance(translated_json, dict)
+            and set(translated_json) == set(original_json)
+            and all(normalize_text_value(extract_translation_result(translated_json, k)[0])
+                    == normalize_text_value(v)
+                    for k, v in original_json.items())
+        )
+        # A batch the model flagged as needing no translation is not an echo, so
+        # it must not be failed wholesale — the per-item path decides each one.
+        _all_same_ok = _all_unchanged and all(
+            extract_translation_result(translated_json, k)[1] and _plausible_same_ok(v)
+            for k, v in original_json.items()
+        )
+        if _all_unchanged and not _all_same_ok:
             # Check if first try
             existing_fail = []
             try:
@@ -475,14 +573,24 @@ def process_translation_results(original_text, translated_text, SRC_SPLIT_JSON_P
         # Get translated value. NOTE: .get(key, "") returns the stored value when
         # the key is present, so a JSON null -> None (not the "" default); calling
         # .strip() on it would raise and crash the ENTIRE batch (losing valid
-        # sibling translations). Coerce any non-string (null / number / object) to
-        # "" so only that one id is treated as missing -> failed, siblings accepted.
-        if translated_json is not None:
-            _tv = translated_json.get(key, "")
-            translated_value = _tv.strip() if isinstance(_tv, str) else ""
-        else:
-            translated_value = ""
-        
+        # sibling translations). normalize_text_value coerces any non-string
+        # (null / number / list) to "" so only that one id is treated as missing
+        # -> failed, siblings accepted.
+        translated_value, claimed_same_ok = extract_translation_result(translated_json, key)
+
+        # The model's same_ok claim is an opinion; honoring it wrongly ships the
+        # original untranslated and silently, so it only counts when the text
+        # itself looks like something that may stay as-is. A rejected claim falls
+        # through to normal validation, i.e. today's behaviour.
+        same_ok = claimed_same_ok and _plausible_same_ok(value)
+        if claimed_same_ok and not same_ok:
+            app_logger.warning(
+                f"Rejected same_ok for id {key}: {str(value)[:60]!r} does not look "
+                f"non-translatable; validating it normally"
+            )
+        elif same_ok:
+            app_logger.info(f"Model marked id {key} as same_ok (kept as-is)")
+
         # Last try mode: keep a non-empty output as best-effort ONLY if its
         # structure (placeholders / formula / field / line markers / machine
         # tokens) is intact — a structural break corrupts the document, so it must
@@ -495,17 +603,14 @@ def process_translation_results(original_text, translated_text, SRC_SPLIT_JSON_P
                         f"Last-try output broke structure (id {key}); failing -> source")
                     failed_translations.append({"count_split": int(key), "value": value})
                 else:
-                    successful_translations.append({
-                        "count_split": int(key),
-                        "original": value,
-                        "translated": translated_value
-                    })
+                    successful_translations.append(_success_item(key, value, translated_value, same_ok))
                     result_dict[key] = translated_value
                     try:
                         successful_count_splits.append(int(key))
                     except (ValueError, TypeError):
                         successful_count_splits.append(key)
-                    if not is_translation_valid(value, translated_value, src_lang, dst_lang):
+                    if not is_translation_valid(value, translated_value, src_lang, dst_lang,
+                                                same_ok=same_ok):
                         needs_review.append({
                             "count_split": int(key),
                             "original": value,
@@ -518,14 +623,11 @@ def process_translation_results(original_text, translated_text, SRC_SPLIT_JSON_P
                 })
         else:
             # Normal mode - validate translation
-            if is_translation_valid(value, translated_value, src_lang, dst_lang):
-                successful_translations.append({
-                    "count_split": int(key),
-                    "original": value,
-                    "translated": translated_value
-                })
+            if is_translation_valid(value, translated_value, src_lang, dst_lang,
+                                    same_ok=same_ok):
+                successful_translations.append(_success_item(key, value, translated_value, same_ok))
                 result_dict[key] = translated_value
-                
+
                 try:
                     successful_count_splits.append(int(key))
                 except (ValueError, TypeError):

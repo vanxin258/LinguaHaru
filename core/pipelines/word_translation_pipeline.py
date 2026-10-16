@@ -3062,11 +3062,10 @@ def write_translated_content_to_word(file_path, original_json_path, translated_j
     with open(translated_json_path, "r", encoding="utf-8") as translated_file:
         translated_data = json.load(translated_file)
 
-    translations = {}
-    for item in translated_data:
-        item_id = str(item.get("id", item.get("count_src")))
-        if item_id and "translated" in item:
-            translations[item_id] = item["translated"]
+    # same_ok items are deliberately left as the source text; writing them back
+    # could only disturb the original run structure, so they are dropped here.
+    from core.engine.writeback_same_ok import build_writeback_translation_map
+    translations = build_writeback_translation_map(translated_data)
     
     # Get temp directory path
     filename = os.path.splitext(os.path.basename(file_path))[0]

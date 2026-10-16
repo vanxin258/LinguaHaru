@@ -46,7 +46,6 @@ class SameOkWritebackTests(unittest.TestCase):
         self.assertNotIn("1", translations)
         self.assertEqual(translations["2"], "你好")
 
-    @unittest.skip("待接入:上游 pipeline 尚未调用 build_writeback_translation_map")
     def test_txt_writeback_keeps_original_for_same_ok_items(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -88,9 +87,11 @@ class SameOkWritebackTests(unittest.TestCase):
                 dst_lang="zh",
             )
 
-            self.assertEqual(Path(result_path).read_text(encoding="utf-8"), "A-101\n\n你好\n\n")
+            # The same_ok item keeps the source text; the other gets its
+            # translation. Blank lines are their own entries in the source
+            # content, so the pipeline does not invent any.
+            self.assertEqual(Path(result_path).read_text(encoding="utf-8"), "A-101\n你好")
 
-    @unittest.skip("待接入:上游 pipeline 尚未调用 build_writeback_translation_map")
     def test_srt_writeback_keeps_original_for_same_ok_items(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -145,7 +146,6 @@ class SameOkWritebackTests(unittest.TestCase):
                 Path(result_path).read_text(encoding="utf-8"),
             )
 
-    @unittest.skip("待接入:上游 pipeline 尚未调用 build_writeback_translation_map")
     def test_excel_writeback_keeps_original_cell_for_same_ok_items(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

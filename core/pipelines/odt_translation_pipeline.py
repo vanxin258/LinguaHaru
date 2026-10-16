@@ -16,6 +16,7 @@ from lxml import etree
 from .epub_translation_pipeline import HLINK_RE, INLINE_RE
 from .skip_pipeline import should_translate
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 TEXT_NS = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
 PARA_TAGS = {f"{{{TEXT_NS}}}p", f"{{{TEXT_NS}}}h"}
@@ -314,7 +315,7 @@ def write_translated_content_to_odt(file_path, original_json_path, translated_js
     with open(translated_json_path, encoding="utf-8") as f:
         translated_data = json.load(f)
 
-    translations = {item["count_src"]: item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data, stringify_keys=False)
     # Paragraph items grouped per member (older JSON without "member" defaults
     # to content.xml); metadata items grouped separately.
     para_by_member = {}

@@ -543,6 +543,22 @@ def polish_translation(translated_json, dst_lang, model, use_online, api_key, ch
     except (ValueError, TypeError):
         return translated_json, None   # not a JSON object we can validate -> skip
 
+    # The model answers either {"id": "text"} or the structured
+    # {"id": {"translation": "...", "same_ok": bool}}. Polish only the values that
+    # carry a translation: same_ok items must reach write-back untouched (that is
+    # the point of the flag), and the reply is rebuilt in the shape it arrived in.
+    def _text(v):
+        if isinstance(v, dict):
+            return str(v.get("translation", "") or "")
+        return "" if v is None else str(v)
+
+    same_ok_keys = {k for k, v in orig.items()
+                    if isinstance(v, dict) and v.get("same_ok")}
+    to_polish = {k: _text(v) for k, v in orig.items()
+                 if k not in same_ok_keys and _text(v).strip()}
+    if not to_polish:
+        return translated_json, None
+
     from core.load_prompt import _lang_name
     dst = _lang_name(dst_lang)
     system_prompt = (
@@ -553,7 +569,8 @@ def polish_translation(translated_json, dst_lang, model, use_online, api_key, ch
         f"Keep every placeholder, variable, tag, escape sequence, URL, number, and code "
         f"fragment EXACTLY as it is.")
     messages = [{"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Polish the values and output only the JSON:\n" + translated_json}]
+                {"role": "user", "content": "Polish the values and output only the JSON:\n"
+                                            + _json.dumps(to_polish, ensure_ascii=False)}]
     if callable(check_stop):
         check_stop()
     try:
@@ -577,13 +594,19 @@ def polish_translation(translated_json, dst_lang, model, use_online, api_key, ch
         polished = _json.loads(m.group(0))
     except ValueError:
         return translated_json, usage
-    if not isinstance(polished, dict) or set(polished.keys()) != set(orig.keys()):
+    if not isinstance(polished, dict) or set(polished.keys()) != set(to_polish.keys()):
         return translated_json, usage   # key drift -> keep the safe first pass
     # Placeholder integrity: the polish must not add/drop/alter any placeholder
     # in any value (it runs after unmasking, so %s/${var}/{name} are live text).
     from core.engine.translation_qa import _placeholders
-    for k in orig:
-        if _placeholders(orig[k]) != _placeholders(polished.get(k, "")):
+    merged = dict(orig)
+    for k, new_text in polished.items():
+        if not isinstance(new_text, str) or _placeholders(to_polish[k]) != _placeholders(new_text):
             app_logger.warning("Polish pass changed placeholders; keeping first-pass translation.")
             return translated_json, usage
-    return _json.dumps(polished, ensure_ascii=False), usage
+        previous = orig.get(k)
+        if isinstance(previous, dict):
+            merged[k] = {**previous, "translation": new_text}
+        else:
+            merged[k] = new_text
+    return _json.dumps(merged, ensure_ascii=False), usage
