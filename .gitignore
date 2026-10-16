@@ -60,3 +60,11 @@ webapp/static/vad/*.onnx
 /dist_models/
 /data/_archive/
 /data/_capture/
+
+# 本地构建产物 / 运行时目录 / 编辑器配置(不入库)
+LinguaHaru.exe
+mykeys/
+temp/
+tmp/
+backup/
+.idea/
