@@ -23,6 +23,7 @@ from core.languages_config import LABEL_TRANSLATIONS
 from .translation_checker import (
     process_translation_results, clean_json, check_and_sort_translations,
     flush_results, flush_results_blocking, invalidate_results)
+from .xml_sanitize import strip_xml_invalid_in_json
 
 # File path constants
 SRC_JSON_PATH = "src.json"
@@ -1285,6 +1286,15 @@ class DocumentTranslator:
 
         # User post-translation replacement rules
         self._apply_text_rules(self.result_json_path, "replace_after")
+
+        # Characters lxml refuses to serialize (a raw control character in the
+        # model's reply) would abort the entire write-back, losing a fully paid
+        # translation. Runs on the restored file, so continue-mode results read
+        # back from disk are covered as well as freshly produced ones.
+        stripped = strip_xml_invalid_in_json(self.result_json_path)
+        if stripped:
+            app_logger.warning(
+                f"Stripped XML-incompatible characters from {stripped} translated items")
 
         # Write output
         app_logger.info("Writing output...")

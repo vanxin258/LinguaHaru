@@ -1988,12 +1988,25 @@ def is_dot_leader(text):
     
     return False
 
-def _vert_marker_kind(run, namespaces):
+def _run_marker_kind(run, namespaces):
     """'SUP'/'SUB' if `run` is a short superscript/subscript marker (footnote
-    letter/number/symbol such as "e", "7", "*"), else None. Such runs are kept
-    verbatim behind a {{SUP_n}} placeholder: re-flowing the translation into
+    letter/number/symbol such as "e", "7", "*"), 'SYM' if it is a short run set
+    in a symbol font, else None. Such runs are kept verbatim behind a
+    {{SUP_n}}/{{SYM_n}} placeholder: re-flowing the translation into
     the original runs by length moved the superscript onto the wrong
     characters ("ᵉ2,630" -> "²630", "apparent¹" -> "ᵃᵖᵃʳᵉⁿᵗᵉ¹")."""
+    if any(etree.QName(c).localname not in ('rPr', 't') for c in run):
+        return None
+    text = ''.join(t.text or '' for t in run.findall('w:t', namespaces)).strip()
+    if not text or len(text) > 3:
+        return None
+
+    # A symbol font decides on its own: the run's characters are glyph indices,
+    # not words, so the "looks like a real word" guard below must not apply.
+    rpr = run.find('w:rPr', namespaces)
+    if rpr is not None and _is_symbol_rpr(etree.tostring(rpr)):
+        return 'SYM'
+
     va = run.find('w:rPr/w:vertAlign', namespaces)
     val = va.get(f'{{{namespaces["w"]}}}val') if va is not None else None
     if val not in ('superscript', 'subscript'):
@@ -2002,12 +2015,33 @@ def _vert_marker_kind(run, namespaces):
         if rs is None or rs.get(f'{{{namespaces["w"]}}}val') not in _NOTE_REF_STYLES:
             return None
         val = 'superscript'
-    if any(etree.QName(c).localname not in ('rPr', 't') for c in run):
-        return None
-    text = ''.join(t.text or '' for t in run.findall('w:t', namespaces)).strip()
-    if not text or len(text) > 3 or sum(c.isalpha() for c in text) > 1:
+    if sum(c.isalpha() for c in text) > 1:
         return None
     return 'SUP' if val == 'superscript' else 'SUB'
+
+
+# A run whose w:t holds font glyph indices rather than text. Word renders a
+# "symbol" run through the font's own glyph table - a Wingdings bullet is
+# literally U+F063 U+F03A U+F03E (those private-use codepoints map to glyphs in
+# the font). Such a run must never be translated: the model either drops the
+# glyphs (the bullet silently disappears from the output) or mangles them (one
+# reply carried a raw \x03, which lxml refuses to serialize and which aborted a
+# whole document's write-back), and any translated text that lands in the run
+# inherits the symbol font and renders as garbage. Kept verbatim behind a
+# {{SYM_n}} placeholder, exactly like the super/subscript markers below.
+_SYMBOL_FONT_RE = re.compile(
+    r'rFonts[^>]*?(?:ascii|hAnsi|cs)="(?:wingdings(?: [23])?|webdings|symbol|marlett)"',
+    re.IGNORECASE)
+
+
+def _is_symbol_rpr(rpr_xml):
+    """True if a serialized w:rPr (str or bytes) selects a symbol font, i.e. the
+    run's w:t is glyph indices and not text."""
+    if not rpr_xml:
+        return False
+    if isinstance(rpr_xml, bytes):
+        rpr_xml = rpr_xml.decode('utf-8', 'ignore')
+    return bool(_SYMBOL_FONT_RE.search(rpr_xml))
 
 
 _MARKER_RE = re.compile(r'\{\{[^}]+\}\}|\[formula_\d+\]')
@@ -2016,15 +2050,16 @@ _NOTE_REF_STYLES = ('FootnoteReference', 'EndnoteReference')
 _VERT_RPR_RE = re.compile(r'vertAlign w:val="(?:super|sub)script"|rStyle w:val="(?:Footnote|Endnote)Reference"')
 
 
-def _is_vert_rpr(rpr_xml):
-    """True if a serialized w:rPr (str or bytes) raises/lowers its text:
-    superscript/subscript or a note-reference character style. Such formatting
-    must never be copied or spread onto ordinary translated text."""
+def _is_marker_rpr(rpr_xml):
+    """True if a serialized w:rPr (str or bytes) belongs to a verbatim marker
+    run: it raises/lowers its text (superscript/subscript or a note-reference
+    character style) or selects a symbol font. Such formatting must never be
+    copied or spread onto ordinary translated text."""
     if not rpr_xml:
         return False
     if isinstance(rpr_xml, bytes):
         rpr_xml = rpr_xml.decode('utf-8', 'ignore')
-    return bool(_VERT_RPR_RE.search(rpr_xml))
+    return bool(_VERT_RPR_RE.search(rpr_xml)) or _is_symbol_rpr(rpr_xml)
 
 
 def should_translate_table_cell(text):
@@ -2062,10 +2097,10 @@ def extract_paragraph_text_with_variables_and_formulas(paragraph, namespaces, nu
     # Counter for math formulas
     formula_counter = 0
     hyperlink_counter = 0
-    vert_counter = 0
-    # Source already holds literal "{{SUP_"/"{{SUB_" text: placeholders would
+    marker_counter = 0
+    # Source already holds literal "{{SUP_"/"{{SYM_" text: placeholders would
     # be ambiguous on write-back, so leave this paragraph's markers alone
-    allow_vert = not re.search(r'\{\{SU[PB]_', ''.join(
+    allow_markers = not re.search(r'\{\{(?:SU[PB]|SYM)_', ''.join(
         t.text or '' for t in paragraph.iter(f'{{{namespaces["w"]}}}t')))
 
     # Get all runs in the paragraph
@@ -2224,16 +2259,23 @@ def extract_paragraph_text_with_variables_and_formulas(paragraph, namespaces, nu
                     app_logger.debug(f"Found math formula, created placeholder: {placeholder}")
                 continue
 
-            # Superscript/subscript footnote marker: keep the run verbatim
-            marker_kind = allow_vert and _vert_marker_kind(child, namespaces)
+            # Super/subscript footnote marker or symbol-font glyph run: keep the
+            # run verbatim behind its placeholder. The counter is shared by all
+            # marker kinds on purpose - write-back rebuilds one formatting group
+            # per marker in run order and addresses them by this index, so a
+            # per-kind counter would misalign the two.
+            marker_kind = allow_markers and _run_marker_kind(child, namespaces)
             if marker_kind:
-                vert_counter += 1
-                placeholder = f'{{{{{marker_kind}_{vert_counter}}}}}'
+                marker_counter += 1
+                placeholder = f'{{{{{marker_kind}_{marker_counter}}}}}'
                 full_text += placeholder
+                # 'vert_run' is the persisted field type and is read back from
+                # src.json in continue mode, so it stays even though it now also
+                # covers symbol-font runs.
                 field_info.append({
                     'type': 'vert_run',
                     'display_text': placeholder,
-                    'index': vert_counter,
+                    'index': marker_counter,
                     'run_xml': etree.tostring(child, encoding='unicode'),
                 })
                 continue
@@ -4392,8 +4434,8 @@ def update_paragraph_text_with_enhanced_preservation(paragraph, new_text, namesp
     # Superscript/subscript markers alone don't need the generic field path
     # (which flattens every text run to one format); they anchor the
     # run-preserving path below instead.
-    vert_runs = {f['display_text']: f for f in (field_info or []) if f.get('type') == 'vert_run'}
-    if vert_runs and len(vert_runs) == len(field_info) and not math_info:
+    marker_runs = {f['display_text']: f for f in (field_info or []) if f.get('type') == 'vert_run'}
+    if marker_runs and len(marker_runs) == len(field_info) and not math_info:
         field_info = None
 
     # Find all runs that are direct children of the paragraph
@@ -4489,7 +4531,7 @@ def update_paragraph_text_with_enhanced_preservation(paragraph, new_text, namesp
     if original_structure and original_structure.get('runs_info'):
         # Find the first text run with formatting
         for run_info in original_structure['runs_info']:
-            if run_info.get('has_text') and run_info.get('rPr_xml') and not _is_vert_rpr(run_info['rPr_xml']):
+            if run_info.get('has_text') and run_info.get('rPr_xml') and not _is_marker_rpr(run_info['rPr_xml']):
                 try:
                     formatting = etree.fromstring(run_info['rPr_xml'])
                     break
@@ -4502,7 +4544,7 @@ def update_paragraph_text_with_enhanced_preservation(paragraph, new_text, namesp
         # turn the whole translation superscript)
         for run in text_runs:
             rPr_elements = run.xpath('./w:rPr', namespaces=namespaces)
-            if rPr_elements and _is_vert_rpr(etree.tostring(rPr_elements[0])):
+            if rPr_elements and _is_marker_rpr(etree.tostring(rPr_elements[0])):
                 continue
             formatting = rPr_elements[0] if rPr_elements else None
             break
@@ -4530,8 +4572,8 @@ def update_paragraph_text_with_enhanced_preservation(paragraph, new_text, namesp
         update_paragraph_content_with_math_and_fields_enhanced(
             paragraph, new_text, namespaces, field_info, math_info, formatting, original_structure
         )
-    elif vert_runs:
-        add_text_around_vert_markers(paragraph, new_text, namespaces, original_run_infos, vert_runs)
+    elif marker_runs:
+        add_text_around_markers(paragraph, new_text, namespaces, original_run_infos, marker_runs)
     elif _should_distribute_runs(original_run_infos, new_text):
         # Plain multi-run paragraph with differing formatting and no special
         # inline objects: distribute the translated text across the original
@@ -4953,7 +4995,7 @@ def _collect_text_run_infos(text_runs, namespaces):
         rPr_elements = run.xpath('./w:rPr', namespaces=namespaces)
         rPr_xml = etree.tostring(rPr_elements[0]) if rPr_elements else None
         infos.append({'rPr_xml': rPr_xml, 'text': text, 'length': len(text),
-                      'is_marker': _vert_marker_kind(run, namespaces) is not None})
+                      'is_marker': _run_marker_kind(run, namespaces) is not None})
     return infos
 
 
@@ -4973,7 +5015,7 @@ def _should_distribute_runs(original_run_infos, new_text):
     # A superscript run that isn't a protected marker ("th" in "5th", "TM")
     # would land on whatever text falls at its offset; drop that formatting
     # instead of moving it onto another word.
-    if any(_is_vert_rpr(i['rPr_xml']) for i in original_run_infos):
+    if any(_is_marker_rpr(i['rPr_xml']) for i in original_run_infos):
         return False
     # Must have at least two runs with actual text to distribute into.
     if sum(1 for i in original_run_infos if i['length'] > 0) < 2:
@@ -5061,12 +5103,13 @@ def add_text_with_distributed_run_formatting(paragraph, text, namespaces, origin
         _append_run_text(run, run_text, namespaces)
 
 
-def add_text_around_vert_markers(paragraph, text, namespaces, original_run_infos, vert_runs):
-    """Write `text` whose {{SUP_n}}/{{SUB_n}} placeholders stand for verbatim
-    superscript/subscript marker runs. Each marker run is restored at its
-    placeholder; the text after marker n takes the formatting of the runs that
-    followed marker n in the original (group n), so markers never re-flow onto
-    neighbouring words and bold/plain spans stay on their own segment."""
+def add_text_around_markers(paragraph, text, namespaces, original_run_infos, marker_runs):
+    """Write `text` whose {{SUP_n}}/{{SUB_n}}/{{SYM_n}} placeholders stand for
+    verbatim marker runs (super/subscript or symbol-font). Each marker run is
+    restored at its placeholder; the text after marker n takes the formatting of
+    the runs that followed marker n in the original (group n), so markers never
+    re-flow onto neighbouring words and bold/plain spans stay on their own
+    segment."""
     # groups[n] = plain runs after the n-th marker (groups[0] = before any)
     groups = [[]]
     for info in original_run_infos:
@@ -5074,14 +5117,14 @@ def add_text_around_vert_markers(paragraph, text, namespaces, original_run_infos
             groups.append([])
         else:
             groups[-1].append(info)
-    groups = [[i for i in g if i['length'] > 0 and not _is_vert_rpr(i['rPr_xml'])] for g in groups]
+    groups = [[i for i in g if i['length'] > 0 and not _is_marker_rpr(i['rPr_xml'])] for g in groups]
     fallback = next((g for g in groups if g), [])
 
     group = groups[0] or fallback
-    pattern = '(' + '|'.join(re.escape(p) for p in vert_runs) + ')'
+    pattern = '(' + '|'.join(re.escape(p) for p in marker_runs) + ')'
     for part in re.split(pattern, text):
-        if part in vert_runs:
-            f = vert_runs[part]
+        if part in marker_runs:
+            f = marker_runs[part]
             paragraph.append(etree.fromstring(f['run_xml']))
             n = f['index']
             group = (groups[n] if n < len(groups) else None) or fallback

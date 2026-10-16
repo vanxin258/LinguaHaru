@@ -5,6 +5,7 @@ import time
 import tempfile
 import threading
 from core.log_config import app_logger
+from core.engine.xml_sanitize import strip_xml_invalid
 from rich import box
 from rich import markup
 from rich.table import Table
@@ -295,7 +296,11 @@ def normalize_text_value(value):
 
     The model may answer with either a bare string (legacy shape) or the
     {"translation": ..., "same_ok": ...} object; anything else (null, number,
-    list) becomes "" so one bad id can never crash the whole batch."""
+    list) becomes "" so one bad id can never crash the whole batch.
+
+    XML-incompatible characters are removed here so the persisted split result
+    (and the translation memory fed from it) never carries a character that
+    would make write-back abort."""
     if isinstance(value, dict):
         if "translation" in value:
             value = value.get("translation")
@@ -307,7 +312,7 @@ def normalize_text_value(value):
         return ""
     if not isinstance(value, str):
         value = str(value)
-    return value.strip()
+    return strip_xml_invalid(value).strip()
 
 
 def extract_translation_result(translated_json, key):
