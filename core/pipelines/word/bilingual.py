@@ -161,7 +161,7 @@ def convert_date_to_target_format(date_str, target_language='en'):
 
 
 def create_bilingual_text(original_text, translated_text):
-    """Create bilingual text format: original text + newline + translated text."""
+    """Create bilingual text format: original text + separator + translated text."""
     if not original_text:
         return clean_translation_brackets(translated_text)
     if not translated_text:
@@ -187,7 +187,8 @@ def create_bilingual_text(original_text, translated_text):
         converted_translated = re.sub(r'\s+', ' ', converted_translated).strip()
         app_logger.debug(f"Removed footnote references from translation: {footnote_refs}")
 
-    return f"{original_clean}\n{converted_translated}"
+    from core.engine.bilingual_format import separator
+    return f"{original_clean}{separator()}{converted_translated}"
 
 
 def apply_latin_font_to_run(run, namespaces, target_language=None):

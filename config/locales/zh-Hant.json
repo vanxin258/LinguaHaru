@@ -429,6 +429,8 @@
   "Caption Style": "字幕樣式",
   "Caption Background": "背景顏色 / 透明度…",
   "Translation Color": "譯文顏色",
+  "Bilingual Separator": "雙語對照：分隔符",
+  "Bilingual Separator Tip": "Word 雙語對照輸出時，原文與譯文之間插入的文字（\n 表示換行，\t 表示定位字元）。",
   "Source Color": "原文顏色…",
   "Caption Font": "字型 / 字形 / 字級…",
   "Reset Style": "恢復預設",

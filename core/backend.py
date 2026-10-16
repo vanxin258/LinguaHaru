@@ -294,6 +294,10 @@ _DEFAULT_CONFIG = {
     # original. color is a hex without '#' ("" = no color). Subtitles (srt/vtt).
     "bilingual_bold": True,
     "bilingual_color": "",
+    # Separator between the original and the translation in Word bilingual output.
+    # "\n" (a line break) by default; the literal two-character sequence \n or \t
+    # typed in the UI is also accepted and turned into the real character.
+    "bilingual_separator": "\n",
     # Live captions: stream the translation token-by-token (online only). Opt-in.
     "live_stream_translation": False,
     # Web real-time VAD engine: "energy" (worklet) or "silero" (neural, noise-

@@ -389,6 +389,8 @@
   "Caption Style": "字幕のスタイル",
   "Caption Background": "背景色 / 不透明度…",
   "Translation Color": "訳文の色",
+  "Bilingual Separator": "バイリンガル：区切り文字",
+  "Bilingual Separator Tip": "Word のバイリンガル出力で原文と訳文の間に挿入する文字（\n は改行、\t はタブ）。",
   "Source Color": "原文の色…",
   "Caption Font": "フォント / スタイル / サイズ…",
   "Reset Style": "既定に戻す",

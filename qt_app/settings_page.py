@@ -460,6 +460,16 @@ class SettingsPage(ScrollArea):
             lambda idx: backend.set_config("bilingual_color", self._bi_colors[idx][0]))
         self.bi_color_label = BodyLabel(tr("Translation Color", lang))
         gl_form.addRow(self.bi_color_label, self.bi_color)
+        # What sits between the original and the translation in Word bilingual
+        # output. Shown with \n / \t escapes since the value is usually a newline.
+        self.bi_sep = LineEdit()
+        self.bi_sep.setText(str(config.get("bilingual_separator", "\n") or "\n")
+                            .replace("\n", "\\n").replace("\t", "\\t"))
+        self.bi_sep.setClearButtonEnabled(True)
+        self.bi_sep.editingFinished.connect(
+            lambda: backend.set_config("bilingual_separator", self.bi_sep.text()))
+        self.bi_sep_label = BodyLabel(tr("Bilingual Separator", lang))
+        gl_form.addRow(self.bi_sep_label, self.bi_sep)
         self.live_stream = SwitchButton()
         self.live_stream.setChecked(config.get("live_stream_translation", False))
         self.live_stream.checkedChanged.connect(

@@ -14,6 +14,10 @@ os.chdir(REPO_ROOT)
 WORK_DIR = os.path.join(REPO_ROOT, "tests", "_roundtrip_work", "extra")
 TEMP_DIR = os.path.join(WORK_DIR, "temp")
 RESULT_DIR = os.path.join(WORK_DIR, "result")
+# main() creates these, but pytest calls the test functions directly and the
+# work dir is gitignored, so a fresh checkout has none.
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 T = "[T]"
 CHECKS = []

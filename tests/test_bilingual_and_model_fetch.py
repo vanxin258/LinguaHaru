@@ -17,6 +17,10 @@ os.chdir(REPO_ROOT)
 WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bilingual_work")
 TEMP_DIR = os.path.join(WORK_DIR, "temp")
 RESULT_DIR = os.path.join(WORK_DIR, "result")
+# The work dir is gitignored, so a fresh checkout has none; every test here
+# saves into it before doing anything else.
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 T = "[T]"  # fake-translation marker
 
@@ -272,6 +276,56 @@ def test_docx_bilingual():
           bool(cell_ps) and all(_bold_after_break(p) for p in cell_ps))
 
 
+# --------------------------------------------------- bilingual separator --
+def test_bilingual_separator():
+    print("Bilingual separator: configures what sits between original and translation")
+    from core import backend
+    from core.pipelines.word.bilingual import create_bilingual_text
+
+    previous = backend.read_config().get("bilingual_separator", "\n")
+
+    def rendered(value):
+        backend.set_config("bilingual_separator", value)
+        return create_bilingual_text("Hello", "你好")
+
+    try:
+        got = rendered("\n")
+        check("default is a line break", got == "Hello\n你好", repr(got))
+        got = rendered("\\n")
+        check("literal \\n becomes a newline", got == "Hello\n你好", repr(got))
+        got = rendered("\\t")
+        check("literal \\t becomes a tab", got == "Hello\t你好", repr(got))
+        got = rendered(" | ")
+        check("custom text separator", got == "Hello | 你好", repr(got))
+        got = rendered("")
+        check("blank falls back to a line break", got == "Hello\n你好", repr(got))
+    finally:
+        backend.set_config("bilingual_separator", previous)
+
+    # End to end: the separator is what actually lands in the written DOCX.
+    from docx import Document
+    from core.pipelines.word_translation_pipeline import (
+        extract_word_content_to_json, write_translated_content_to_word)
+
+    src = os.path.join(WORK_DIR, "bi_sep.docx")
+    doc = Document()
+    doc.add_paragraph("Separator probe")
+    doc.save(src)
+
+    backend.set_config("bilingual_separator", " ||| ")
+    try:
+        src_json = extract_word_content_to_json(src, TEMP_DIR)
+        dst_json = fake_translate(src_json)
+        out = write_translated_content_to_word(src, src_json, dst_json, TEMP_DIR, RESULT_DIR,
+                                               bilingual_mode=True, src_lang="en", dst_lang="zh")
+        with zipfile.ZipFile(out) as z:
+            xml = z.read("word/document.xml").decode("utf-8")
+        check("separator reaches the written DOCX",
+              " ||| " in xml and "Separator probe" in xml and T in xml, xml[:400])
+    finally:
+        backend.set_config("bilingual_separator", previous)
+
+
 # -------------------------------------------------------------------- html --
 def test_html_bilingual():
     print("HTML bilingual: original inserted as sibling block after translation")
@@ -505,6 +559,7 @@ def main():
 
     for fn in (test_srt_bilingual, test_vtt_bilingual, test_txt_bilingual,
                test_md_bilingual, test_xlsx_bilingual_openpyxl, test_docx_bilingual,
+               test_bilingual_separator,
                test_html_bilingual, test_epub_bilingual, test_model_fetch):
         try:
             fn()

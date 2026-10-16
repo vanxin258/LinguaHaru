@@ -5,6 +5,10 @@ Two config knobs (both ends expose them under the bilingual toggle):
   - bilingual_bold   (bool, default True)  — bold the translation
   - bilingual_color  (hex string w/o '#', e.g. "C00000"; "" = no color)
 
+Plus the Word-only separator:
+  - bilingual_separator (default "\n") — what sits between the original and the
+    translation in a Word bilingual paragraph. Accepts the escapes \n and \t.
+
 `style_markup(text, family)` wraps the translation with the right markup for a
 markup-based format family. DOCX/XLSX style runs/fonts directly via the helpers
 below (markup can't be embedded there)."""
@@ -16,6 +20,19 @@ def options():
     """(bold, color_hex_without_hash). color is '' when disabled."""
     c = backend.read_config()
     return bool(c.get("bilingual_bold", True)), str(c.get("bilingual_color", "") or "").strip().lstrip("#")
+
+
+def separator():
+    """What goes between the original and the translation in Word bilingual
+    output. Blank falls back to a line break, so an empty setting can never glue
+    the two texts together."""
+    raw = backend.read_config().get("bilingual_separator", "\n")
+    if raw is None:
+        return "\n"
+    text = str(raw)
+    if not text:
+        return "\n"
+    return text.replace("\\n", "\n").replace("\\t", "\t")
 
 
 def enabled():
