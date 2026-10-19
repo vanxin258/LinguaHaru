@@ -1,5 +1,6 @@
 # pipeline/word_translation_pipeline.py   By AI-Transtools
 # Unified Word translation pipeline supporting standard and bilingual modes
+import copy
 import json
 import os
 import re
@@ -1438,7 +1439,7 @@ def extract_paragraph_properties(paragraph, namespaces):
         return etree.tostring(pPr[0], encoding='unicode')
     return None
 
-def extract_paragraph_structure(paragraph, namespaces):
+def extract_paragraph_structure(paragraph, namespaces, exclude_textbox_runs=True):
     """Extract complete paragraph structure information"""
     structure = {
         'total_runs': 0,
@@ -1447,9 +1448,13 @@ def extract_paragraph_structure(paragraph, namespaces):
         'has_drawings': False,
         'has_math': False
     }
-    
-    # Get all runs excluding textbox content
-    runs = paragraph.xpath('./w:r[not(ancestor::wps:txbx) and not(ancestor::v:textbox)]', namespaces=namespaces)
+
+    # Get all runs excluding textbox content (or all runs when the paragraph
+    # itself lives inside a textbox)
+    if exclude_textbox_runs:
+        runs = paragraph.xpath('./w:r[not(ancestor::wps:txbx) and not(ancestor::v:textbox)]', namespaces=namespaces)
+    else:
+        runs = paragraph.xpath('./w:r', namespaces=namespaces)
     structure['total_runs'] = len(runs)
     
     for run_idx, run in enumerate(runs):
@@ -2553,11 +2558,12 @@ def process_single_textbox(textbox, textbox_idx, textbox_format, tree, namespace
     textbox_text = ""
     textbox_field_info = []
     textbox_math_info = []
-    
+    textbox_paragraph_items = []
+
     for para_idx, paragraph in enumerate(textbox_paragraphs):
         # Enhanced TOC detection for textbox content
         is_toc, toc_info = detect_toc_paragraph_enhanced(paragraph, namespaces, False)
-        
+
         if is_toc:
             toc_title_text, toc_structure = extract_toc_title_with_complete_structure_enhanced(paragraph, namespaces)
             para_text = toc_title_text
@@ -2570,18 +2576,34 @@ def process_single_textbox(textbox, textbox_idx, textbox_format, tree, namespace
                 paragraph, namespaces, None, False
             )
             toc_structure = None
-        
+
         if para_text:
             textbox_text += para_text
             if para_idx < len(textbox_paragraphs) - 1:
                 textbox_text += "\n"
-            
+
             if para_field_info:
                 textbox_field_info.extend(para_field_info)
-            
+
             if para_math_info:
                 textbox_math_info.extend(para_math_info)
-    
+
+            # Keep each paragraph's own formatting so write-back can update it
+            # in place instead of flattening the whole textbox to one style.
+            para_item = {
+                "paragraph_index": para_idx,
+                "text": para_text,
+                "original_pPr": extract_paragraph_properties(paragraph, namespaces),
+                "original_structure": extract_paragraph_structure(
+                    paragraph, namespaces, exclude_textbox_runs=False
+                )
+            }
+            if para_field_info:
+                para_item["field_info"] = para_field_info
+            if para_math_info:
+                para_item["math_info"] = para_math_info
+            textbox_paragraph_items.append(para_item)
+
     if textbox_text.strip() and should_translate_enhanced(textbox_text):
         textbox_item = {
             "type": "textbox",
@@ -2590,6 +2612,7 @@ def process_single_textbox(textbox, textbox_idx, textbox_format, tree, namespace
             "textbox_index": textbox_idx,
             "positioning_info": positioning_info,
             "paragraph_context": paragraph_context,
+            "textbox_paragraphs": textbox_paragraph_items,
             "value": textbox_text.replace("\n", "␊").replace("\r", "␍")
         }
         
@@ -4159,7 +4182,10 @@ def update_textbox_with_enhanced_preservation(item, translated_text, all_wps_tex
         
         field_info = item.get("field_info")
         math_info = item.get("math_info")
-        update_textbox_content_with_enhanced_preservation(textbox, translated_text, namespaces, field_info, math_info)
+        update_textbox_content_with_enhanced_preservation(
+            textbox, translated_text, namespaces, field_info, math_info,
+            paragraph_items=item.get("textbox_paragraphs")
+        )
         app_logger.debug(f"Updated textbox {textbox_index} with translated text: '{translated_text[:50]}...'")
         
     except (IndexError, TypeError) as e:
@@ -4228,7 +4254,10 @@ def update_header_footer_textbox_with_enhanced_preservation(item, translated_tex
         textbox = hf_textboxes[textbox_index]
         field_info = item.get("field_info")
         math_info = item.get("math_info")
-        update_textbox_content_with_enhanced_preservation(textbox, translated_text, namespaces, field_info, math_info)
+        update_textbox_content_with_enhanced_preservation(
+            textbox, translated_text, namespaces, field_info, math_info,
+            paragraph_items=item.get("textbox_paragraphs")
+        )
         app_logger.debug(f"Updated header/footer textbox {textbox_index} with translated text: '{translated_text[:50]}...'")
         
     except (IndexError, TypeError) as e:
@@ -5159,53 +5188,106 @@ def add_text_with_enhanced_formatting(paragraph, text, namespaces, formatting=No
                 text_run.insert(0, cloned_rPr)
             _append_run_text(text_run, part, namespaces)
 
-def update_textbox_content_with_enhanced_preservation(textbox, new_text, namespaces, field_info=None, math_info=None):
-    """Update textbox content with enhanced format preservation including math formulas"""
+def _map_textbox_lines_to_paragraph_items(text_lines, paragraph_items):
+    """Pair each output line with the source paragraph whose formatting it
+    should keep. Returns (items_per_line, in_place)."""
+    count = len(paragraph_items)
+    if not count:
+        return [], False
+    if len(text_lines) == count:
+        return list(paragraph_items), True
+
+    # Bilingual output repeats the original lines before the translation, so
+    # both blocks map back to the same source paragraphs.
+    original_texts = [(item.get("text") or "").strip() for item in paragraph_items]
+    prefix = [line.strip() for line in text_lines[:count]]
+    offset = count if len(text_lines) > count and prefix == original_texts else 0
+
+    items = []
+    for i in range(len(text_lines)):
+        pos = i if offset == 0 or i < offset else i - offset
+        items.append(paragraph_items[min(pos, count - 1)])
+    return items, False
+
+
+def update_textbox_content_with_enhanced_preservation(textbox, new_text, namespaces, field_info=None, math_info=None, paragraph_items=None):
+    """Update textbox content while preserving each source paragraph's formatting.
+
+    Textbox text used to be flattened into one string and rebuilt with the first
+    run's formatting, which dropped paragraph properties (numbering, indents,
+    spacing) and every other run's style. With per-paragraph structures the
+    translated lines are written back into the existing paragraphs; if the line
+    count changes (bilingual output, merged/split lines) they are rebuilt from a
+    clone of the matching source paragraph instead."""
     textbox_content = textbox.xpath('.//w:txbxContent', namespaces=namespaces)
     if not textbox_content:
         app_logger.error("No textbox content found")
         return
-    
-    # Get original formatting from existing paragraphs before clearing
+
+    existing_paragraphs = textbox_content[0].xpath('.//w:p', namespaces=namespaces)
+    text_lines = new_text.split("\n")
+
+    if paragraph_items:
+        line_items, in_place = _map_textbox_lines_to_paragraph_items(
+            text_lines, paragraph_items)
+        can_update_in_place = in_place and all(
+            item.get("paragraph_index") is not None
+            and item.get("paragraph_index") < len(existing_paragraphs)
+            for item in line_items
+        )
+        if can_update_in_place:
+            for line, para_item in zip(text_lines, line_items):
+                paragraph = existing_paragraphs[para_item["paragraph_index"]]
+                if para_item.get("original_pPr"):
+                    restore_paragraph_properties(
+                        paragraph, para_item["original_pPr"], namespaces)
+                update_paragraph_text_with_enhanced_preservation(
+                    paragraph, line, namespaces, None,
+                    para_item.get("field_info"), para_item.get("math_info"),
+                    para_item.get("original_structure"))
+            return
+
+        for child in list(textbox_content[0]):
+            textbox_content[0].remove(child)
+        for line, para_item in zip(text_lines, line_items):
+            template_idx = para_item.get("paragraph_index")
+            template = (existing_paragraphs[template_idx]
+                        if template_idx is not None and template_idx < len(existing_paragraphs)
+                        else None)
+            if template is not None:
+                new_p = copy.deepcopy(template)
+                for child in list(new_p):
+                    if child.tag != f"{{{namespaces['w']}}}pPr":
+                        new_p.remove(child)
+            else:
+                new_p = etree.Element(f"{{{namespaces['w']}}}p")
+            textbox_content[0].append(new_p)
+            update_paragraph_text_with_enhanced_preservation(
+                new_p, line, namespaces, None,
+                para_item.get("field_info"), para_item.get("math_info"),
+                para_item.get("original_structure"))
+        return
+
+    # Legacy source JSON produced before per-paragraph structures were stored.
     original_formatting = None
-    existing_paragraphs = textbox_content[0].xpath('./w:p', namespaces=namespaces)
     if existing_paragraphs:
-        first_p = existing_paragraphs[0]
-        first_runs = first_p.xpath('./w:r', namespaces=namespaces)
+        first_runs = existing_paragraphs[0].xpath('./w:r', namespaces=namespaces)
         if first_runs:
             rPr_elements = first_runs[0].xpath('./w:rPr', namespaces=namespaces)
             if rPr_elements:
                 original_formatting = rPr_elements[0]
-    
-    # Clear all existing paragraphs
+
     for child in list(textbox_content[0]):
         textbox_content[0].remove(child)
-    
-    # Handle multi-line text
-    if "\n" in new_text:
-        text_lines = new_text.split("\n")
-        for line_idx, line in enumerate(text_lines):
-            # Create new paragraph
-            new_p = etree.SubElement(textbox_content[0], f"{{{namespaces['w']}}}p")
-            
-            # Process line with field variables and math formulas
-            if field_info or math_info:
-                update_paragraph_content_with_math_and_fields_enhanced(
-                    new_p, line, namespaces, field_info, math_info, original_formatting, None
-                )
-            else:
-                add_text_with_enhanced_formatting(new_p, line, namespaces, original_formatting)
-    else:
-        # Single line text - create one paragraph
+
+    for line in text_lines:
         new_p = etree.SubElement(textbox_content[0], f"{{{namespaces['w']}}}p")
-        
-        # Process text with field variables and math formulas
         if field_info or math_info:
             update_paragraph_content_with_math_and_fields_enhanced(
-                new_p, new_text, namespaces, field_info, math_info, original_formatting, None
+                new_p, line, namespaces, field_info, math_info, original_formatting, None
             )
         else:
-            add_text_with_enhanced_formatting(new_p, new_text, namespaces, original_formatting)
+            add_text_with_enhanced_formatting(new_p, line, namespaces, original_formatting)
 
 def update_toc_paragraph_with_complete_structure(paragraph, translated_title, namespaces, toc_structure):
     """Update TOC paragraph using complete structure information for exact preservation"""
