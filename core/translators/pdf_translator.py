@@ -18,17 +18,19 @@ import json
 import os
 import re
 import shutil
+import asyncio
 import threading
 from collections import Counter
 from pathlib import Path
 
-from babeldoc.translator.translator import BaseTranslator
+from babeldoc.translator.translator import BaseTranslator, _translate_rate_limiter
 from babeldoc.format.pdf.translation_config import TranslationConfig, WatermarkOutputMode
 from babeldoc.format.pdf.high_level import do_translate, get_translation_stage, init as babeldoc_init
 from babeldoc.docvision.base_doclayout import DocLayoutModel
 from babeldoc.progress_monitor import ProgressMonitor
 
 from core.llm.llm_wrapper import translate_text
+from core.llm.online_translation import HardApiError
 from core.engine.base_translator import DocumentTranslator
 from core.engine.text_separator import load_glossary, find_terms_with_hashtable
 from core.pipelines.skip_pipeline import should_translate
@@ -126,8 +128,26 @@ class _CallbackTranslator(BaseTranslator):
         # do_translate) so it's recorded even when BabelDOC serves the paragraph
         # from its SQLite cache — otherwise re-translating a PDF you've translated
         # before captures nothing and it can't be proofread.
-        result = super().translate(text, ignore_cache=ignore_cache,
-                                   rate_limit_params=rate_limit_params)
+        # BabelDOC's own translate() caches whatever do_translate returns — and a
+        # failed paragraph (bad key, network, out of credit) returns the SOURCE
+        # text. That poisoned the cache: every later run of the same PDF served
+        # the untranslated text, spent 0 tokens and output an unchanged file.
+        # Same flow, but only a real translation (!= source) is cached.
+        use_cache = not (self.ignore_cache or ignore_cache)
+        result = None
+        if use_cache:
+            try:
+                result = self.cache.get(text)
+            except Exception:  # noqa: BLE001 — a cache read must never break translation
+                result = None
+        if result is not None and result != text:
+            self.translate_cache_call_count += 1
+        else:
+            _translate_rate_limiter.wait()
+            result = self.do_translate(text, rate_limit_params)
+            if use_cache and result != text:
+                self.cache.set(text, result)
+        self.translate_call_count += 1
         if self._record_cb:
             try:
                 self._record_cb(text, result)
@@ -194,6 +214,7 @@ class PdfTranslator(DocumentTranslator):
         # Failed-paragraph tracking (returned as missing_counts)
         self._paragraph_counter = 0
         self._failed_paragraphs = []
+        self._fatal_error = None   # first HardApiError (bad key / no credit)
         # (original, translated) pairs for the post-run QA report
         self._qa_pairs = []
         # Proofread support: every attempted paragraph (source -> translation, or
@@ -377,6 +398,11 @@ class PdfTranslator(DocumentTranslator):
             self._cancel_event.set()
             raise
 
+        # A fatal API error (401/402) already aborted the run: don't spend more
+        # calls on the remaining paragraphs while BabelDOC winds down.
+        if self._fatal_error is not None:
+            return text
+
         stripped = text.strip()
         if not should_translate(stripped):
             return text
@@ -416,13 +442,23 @@ class PdfTranslator(DocumentTranslator):
         # translate_text retries API failures internally; this loop only
         # retries malformed (unparseable) model output
         for attempt in range(2):
-            translated_text, success, token_usage = translate_text(
-                segment, previous_text, self.model, self.use_online,
-                self.api_key, self.system_prompt, self.user_prompt,
-                self.previous_prompt, self.glossary_prompt, glossary_terms,
-                check_stop_callback=self._check_stop_and_signal_cancel,
-                options=self.topts,   # apply the run's mode sampling/tone/length too
-            )
+            try:
+                translated_text, success, token_usage = translate_text(
+                    segment, previous_text, self.model, self.use_online,
+                    self.api_key, self.system_prompt, self.user_prompt,
+                    self.previous_prompt, self.glossary_prompt, glossary_terms,
+                    check_stop_callback=self._check_stop_and_signal_cancel,
+                    options=self.topts,   # apply the run's mode sampling/tone/length too
+                )
+            except HardApiError as e:
+                # BabelDOC swallows per-paragraph exceptions, so a bad key / no
+                # credit used to "complete" with an untranslated PDF and no error.
+                # Remember it, stop BabelDOC, and re-raise from process().
+                with self.lock:
+                    if self._fatal_error is None:
+                        self._fatal_error = e
+                self._cancel_event.set()
+                return text
             self._add_token_usage(token_usage)
 
             if not success or not translated_text:
@@ -699,14 +735,23 @@ class PdfTranslator(DocumentTranslator):
 
             # If the run was aborted by a stop request, surface it now
             self.check_for_stop()
+            if self._fatal_error is not None:
+                raise self._fatal_error
 
             if result:
                 self.mono_pdf_path = result.mono_pdf_path
                 self.dual_pdf_path = result.dual_pdf_path
 
-        except Exception as e:
+        # asyncio.CancelledError is a BaseException: BabelDOC raises it once
+        # cancel_event is set (user stop OR our fatal-API abort). Uncaught, it
+        # escaped the task runner and the task never reached a final state.
+        except (Exception, asyncio.CancelledError) as e:
             # A stop request may surface as a BabelDOC cancellation error
             self.check_for_stop()
+            if self._fatal_error is not None:
+                raise self._fatal_error
+            if isinstance(e, asyncio.CancelledError):
+                raise RuntimeError("PDF translation was cancelled") from e
             app_logger.error(f"PDF translation failed: {e}")
             # A scanned / image-only PDF has no text layer, so BabelDOC finds no
             # paragraphs. Don't surface its cryptic message — tell the user to use
@@ -735,6 +780,12 @@ class PdfTranslator(DocumentTranslator):
                 f"{len(self._failed_paragraphs)} paragraphs kept their source text "
                 f"(translation failed): {self._failed_paragraphs[:20]}"
             )
+            # Not ONE paragraph translated (fresh or cached): the "translated" PDF
+            # is just the original. Fail the task instead of reporting success.
+            if not any(r and r.strip() != src for src, r in self._proofread_pairs):
+                raise RuntimeError(
+                    f"No paragraph could be translated ({len(self._failed_paragraphs)} failed) — "
+                    "check the interface (Interface Management → Test) and the log.")
 
         # Pick the output to return
         output_path = None

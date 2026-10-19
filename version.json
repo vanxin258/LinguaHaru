@@ -1,19 +1,19 @@
 {
-    "version": "7.0.7",
+    "version": "7.0.12",
     "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/latest",
-    "notes": "7.0.7: manga text removal erases only the glyph strokes, so balloon outlines stay clean (and whole pages process much faster); manga lettering stays inside the balloon, and vertical text uses vertical punctuation with better column breaks. / 7.0.7：漫画抹字只擦掉文字笔画，气泡边框不再被涂花，整页处理也快了很多；漫画译文留在气泡内，竖排使用竖排标点，换列更自然。",
+    "notes": "7.0.12: the API is checked before translating — a bad key / no balance / unreachable interface stops in seconds with a clear message; failed tasks show why; 'Download log' in History; plugin install/uninstall finish with one 'Restart now'. / 7.0.12：翻译前先检查 API，密钥无效/余额不足/连不上会在几秒内明确提示；任务失败显示原因；历史记录可「下载日志」；插件安装/卸载点「立即重启」即可完成。",
     "assets": {
         "web": {
-            "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/download/v7.0.7/LinguaHaru-7.0.7-web-portable.zip",
-            "sha256": "ad9d83bcaad40ad65715e4f2f889282083e4597e5c3612e6843f2c5bb94c7afa"
+            "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/download/v7.0.12/LinguaHaru-7.0.12-web-portable.zip",
+            "sha256": "41642bd2da71b2e4fe8b26848bd50882e6195e17e3c8270c4294e65ec44b0ffe"
         },
         "desktop": {
-            "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/download/v7.0.7/LinguaHaru-7.0.7-desktop-portable.zip",
-            "sha256": "f4e1b832ea9e1b939b8943a41b350929fb3f88d71a5b4ec665bba76efaff7286"
+            "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/download/v7.0.12/LinguaHaru-7.0.12-desktop-portable.zip",
+            "sha256": "ae7015c6667501a74610b4f8858864cc37bd71cc1bcb971d8a46d9d0d9c409cb"
         },
         "desktop-mac": {
-            "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/download/v7.0.7/LinguaHaru-7.0.7-desktop-mac.zip",
-            "sha256": "95f14f45593a20b9dec3574456b605c6e93fc17f81036ea0f4be3fdb73da491b"
+            "url": "https://github.com/YANG-Haruka/LinguaHaru/releases/download/v7.0.12/LinguaHaru-7.0.12-desktop-mac.zip",
+            "sha256": "18adad96664590168568e75d0b3719bb4c9b5e4c6cbed429e46653848ffffdab"
         }
     }
 }

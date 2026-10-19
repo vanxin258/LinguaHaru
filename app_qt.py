@@ -11,6 +11,12 @@ import os
 import sys
 from pathlib import Path
 
+# pythonw (the desktop shortcut) has no console: sys.stdout/stderr are None and
+# any write (our Qt log handler, tqdm, libraries) raises mid-UI-build.
+for _name in ("stdout", "stderr"):
+    if getattr(sys, _name) is None:
+        setattr(sys, _name, open(os.devnull, "w", encoding="utf-8"))
+
 
 def _patch_tiktoken():
     """Use bundled tiktoken BPE files when present."""
@@ -49,6 +55,11 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 # is shown, so the UI appears instantly.
 from core.model_store import setup_model_env  # noqa: E402
 setup_model_env(defer_network=True)
+try:   # finish uninstalls queued while their libs were loaded (before anything imports them)
+    from core.module_manager import run_pending_uninstalls  # noqa: E402
+    run_pending_uninstalls()
+except Exception:  # noqa: BLE001
+    pass
 try:   # let downloaded market plugins hook into the app (best-effort)
     from core import plugins_registry as _pr  # noqa: E402
     _pr.activate_downloaded_plugins()
@@ -159,7 +170,9 @@ def _start_background_warmup(window):
             # daemon thread: this QThread is waited on at close, an import isn't.
             try:
                 from core.optional_modules import realtime_voice_available
-                if realtime_voice_available():
+                from core.module_manager import pending_installs
+                # A queued install must replace files the warm-up would lock.
+                if not pending_installs() and realtime_voice_available():
                     import threading
                     from core.pipelines.video_translation_pipeline import warm_import_live_engine
                     threading.Thread(target=warm_import_live_engine, daemon=True).start()
