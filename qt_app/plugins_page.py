@@ -23,6 +23,8 @@ from qfluentwidgets import (
     MessageBox, MessageBoxBase,
 )
 
+from core.module_manager import PENDING_RESTART, PENDING_INSTALL_RESTART
+
 
 class _MarketFetchWorker(QThread):
     """Fetch the remote plugin index off the UI thread."""
@@ -828,6 +830,12 @@ class PluginsPage(ScrollArea):
         from core.log_config import system_event
         from core.model_store import human_size
         if action == "uninstall":
+            if msg == PENDING_RESTART:
+                # In use this session -> queued; finishes automatically on restart.
+                self._ask_restart(card._mod["name"], "Uninstall After Restart")
+                system_event(f"Plugin uninstall queued for restart: {card._mod['name']}")
+                self._drain_install_queue()
+                return
             if not ok:
                 # Honor the failure — don't report success when uninstall errored.
                 self._info(card._mod["name"], f"{tr('Failed', self._lang)}: {(msg or '')[-200:]}", error=True)
@@ -869,12 +877,36 @@ class PluginsPage(ScrollArea):
             # card still reads "not installed". It activates after a restart; say
             # so instead of the misleading "failed".
             card.set_install_line(tr("Restart To Activate", self._lang))
-            self._info(card._mod["name"], tr("Restart To Activate", self._lang))
+            self._ask_restart(card._mod["name"], "Restart To Activate")
             system_event(f"Plugin {action} (pending restart): {card._mod['name']}")
+        elif msg == PENDING_INSTALL_RESTART:
+            # A component it must replace is in use: queued; a restart re-runs it.
+            card.set_install_line(tr("Install After Restart", self._lang))
+            self._ask_restart(card._mod["name"], "Install After Restart")
+            system_event(f"Plugin install queued for restart: {card._mod['name']}")
         else:
             self._info(card._mod["name"],
                        f"{tr('Install failed', self._lang)}: {msg}", error=True)
         self._drain_install_queue()
+
+    def run_pending_installs(self):
+        """Re-run installs queued before the restart (their components were in
+        use), through the normal flow so the card shows progress."""
+        from core.module_manager import take_pending_installs
+        for name in take_pending_installs():
+            card = next((c for c in self._opt_cards if c._mod.get("name") == name), None)
+            if card is not None:
+                self._start_install(card, "install")
+
+    def _ask_restart(self, title, key):
+        """A 'finishes after a restart' notice + a Restart-now button."""
+        from qfluentwidgets import PushButton
+        bar = InfoBar.warning(title, tr(key, self._lang), orient=1,
+                              isClosable=True, position=InfoBarPosition.TOP,
+                              duration=-1, parent=self)
+        btn = PushButton(tr("Restart Now", self._lang))
+        btn.clicked.connect(lambda: getattr(self.window(), "_relaunch", lambda: None)())
+        bar.addWidget(btn)
 
     def _info(self, title, text, error=False):
         bar = InfoBar.error if error else InfoBar.success

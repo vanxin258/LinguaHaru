@@ -18,6 +18,7 @@ from openpyxl.styles import Alignment
 from openpyxl.utils import range_boundaries
 from .skip_pipeline import should_translate
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 
 def _excel_shrink_enabled():
@@ -530,7 +531,7 @@ def _write_with_openpyxl(file_path, original_json_path, translated_json_path, re
         translated_data = json.load(translated_file)
 
     # Convert translations to a dictionary {count: translated_value}
-    translations = {str(item["count_src"]): item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data)
     shrink_to_fit = _excel_shrink_enabled()   # opt-in: auto-shrink long translations
 
     # Track sheet name translations to apply at the end
@@ -1689,10 +1690,7 @@ def _write_with_xlwings(file_path, original_json_path, translated_json_path, res
     app_logger.info(f"Translation data count: {len(translated_data)}")
 
     shrink_to_fit = _excel_shrink_enabled()   # opt-in: auto-shrink long translations
-    translations = {}
-    for item in translated_data:
-        count_src = str(item["count_src"])
-        translations[count_src] = item["translated"]
+    translations = build_writeback_translation_map(translated_data)
 
     app_logger.info(f"Translation dictionary count: {len(translations)}")
 

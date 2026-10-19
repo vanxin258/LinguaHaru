@@ -10,6 +10,7 @@ from .skip_pipeline import should_translate
 from core.log_config import app_logger
 from typing import Dict, List
 import re
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 
 def _slide_num(name):
@@ -871,7 +872,7 @@ def write_translated_content_to_ppt(file_path: str, original_json_path: str, tra
         raise
 
     # Create a mapping of translations
-    translations = {str(item["count_src"]): item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data)
     app_logger.info(f"Loaded {len(translations)} translations")
 
     # Prepare output path

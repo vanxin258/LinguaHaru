@@ -159,7 +159,15 @@ def get_translator_class(
         return partial(translator_class, bilingual_mode=word_bilingual_mode)
     if ext == ".pdf":
         return partial(translator_class, word_bilingual_mode=pdf_bilingual_mode)
-    if ext in (".srt", ".vtt"):
+    if ext == ".srt":
+        # Resegmentation is an opt-in enhancement read straight from config
+        # rather than threaded through both frontends as another flag.
+        if read_config().get("subtitle_resegment_mode", False):
+            return partial(translator_class,
+                           bilingual_mode=subtitle_bilingual_mode,
+                           subtitle_resegment_mode=True)
+        return partial(translator_class, bilingual_mode=subtitle_bilingual_mode)
+    if ext == ".vtt":
         return partial(translator_class, bilingual_mode=subtitle_bilingual_mode)
     if ext == ".txt":
         return partial(translator_class, bilingual_mode=txt_bilingual_mode)
@@ -237,6 +245,11 @@ _DEFAULT_CONFIG = {
     "word_bilingual_mode": False,
     "pdf_bilingual_mode": False,
     "subtitle_bilingual_mode": False,
+    # SRT only: ask the model where the cue boundaries should be before
+    # translating (speech-recognition captions are cut at fixed intervals, not at
+    # sentence ends). See core.pipelines.subtitle_resegment. Off => the original
+    # cue boundaries are kept.
+    "subtitle_resegment_mode": False,
     "txt_bilingual_mode": False,
     "md_bilingual_mode": False,
     "epub_bilingual_mode": False,
@@ -294,6 +307,10 @@ _DEFAULT_CONFIG = {
     # original. color is a hex without '#' ("" = no color). Subtitles (srt/vtt).
     "bilingual_bold": True,
     "bilingual_color": "",
+    # Separator between the original and the translation in Word bilingual output.
+    # "\n" (a line break) by default; the literal two-character sequence \n or \t
+    # typed in the UI is also accepted and turned into the real character.
+    "bilingual_separator": "\n",
     # Live captions: stream the translation token-by-token (online only). Opt-in.
     "live_stream_translation": False,
     # Web real-time VAD engine: "energy" (worklet) or "silero" (neural, noise-
@@ -1285,3 +1302,26 @@ def add_language(name):
 
 def labels_for(lang="en"):
     return LABEL_TRANSLATIONS.get(lang, LABEL_TRANSLATIONS["en"])
+
+
+def build_log_bundle(rec, dest_zip, include_system=True):
+    """Zip a history record's own log (+ the program-wide log/system.log, where
+    plugin / startup errors land) into dest_zip, for a user to send for support.
+    Returns dest_zip, or None when there is no log to bundle."""
+    import zipfile
+    files = []
+    task_log = (rec or {}).get("log_file_path")
+    if task_log and os.path.isfile(task_log):
+        files.append((task_log, os.path.basename(task_log)))
+    if include_system:
+        sys_log = os.path.join(RUNTIME_ROOT, "log", "system.log")
+        if os.path.isfile(sys_log):
+            files.append((sys_log, "system.log"))
+    if not files:
+        return None
+    from core.version import __version__
+    with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("version.txt", f"LinguaHaru {__version__}\n")
+        for path, arc in files:
+            z.write(path, arc)
+    return dest_zip

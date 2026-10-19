@@ -23,6 +23,7 @@ from core.languages_config import LABEL_TRANSLATIONS
 from .translation_checker import (
     process_translation_results, clean_json, check_and_sort_translations,
     flush_results, flush_results_blocking, invalidate_results)
+from .xml_sanitize import strip_xml_invalid_in_json
 
 # File path constants
 SRC_JSON_PATH = "src.json"
@@ -1056,6 +1057,11 @@ class DocumentTranslator:
             f"threads={self.num_threads} max_token={self.max_token} | out={self.result_dir}")
         start_t = time.time()
         try:
+            # Fail in seconds with the reason when the interface is down / the key
+            # is bad, instead of retrying every segment for minutes (0 tokens).
+            if self.use_online and getattr(self, "needs_llm", True):
+                from core.llm.online_translation import preflight
+                preflight(self.model, self.api_key)
             result = self._process_impl(file_name, file_extension, progress_callback)
             out = result[0] if isinstance(result, (tuple, list)) else result
             missing = result[1] if isinstance(result, (tuple, list)) and len(result) > 1 else None
@@ -1285,6 +1291,15 @@ class DocumentTranslator:
 
         # User post-translation replacement rules
         self._apply_text_rules(self.result_json_path, "replace_after")
+
+        # Characters lxml refuses to serialize (a raw control character in the
+        # model's reply) would abort the entire write-back, losing a fully paid
+        # translation. Runs on the restored file, so continue-mode results read
+        # back from disk are covered as well as freshly produced ones.
+        stripped = strip_xml_invalid_in_json(self.result_json_path)
+        if stripped:
+            app_logger.warning(
+                f"Stripped XML-incompatible characters from {stripped} translated items")
 
         # Write output
         app_logger.info("Writing output...")

@@ -12,6 +12,12 @@ import shutil
 
 from core.paths import PROMPTS_DIR
 
+# Prompt files under config/prompts/ that are NOT language prompts. They run their
+# own pass with their own contract and are resolved by name through
+# load_prompt(prompt_code_override=...); treating one as a language would offer it
+# in every language menu and add a column to new glossaries.
+AUXILIARY_PROMPTS = {"subtitle_resegment"}
+
 
 def normalize_language_code(name):
     """A custom language's code, which is ALSO its prompt filename.
@@ -87,6 +93,13 @@ def get_available_languages():
             if filename.endswith(".json"):
                 # Get language code without extension
                 lang_code = os.path.splitext(filename)[0]
+
+                # Auxiliary profiles are not languages — they run their own pass
+                # (see core.pipelines.subtitle_resegment) and are resolved by name
+                # via load_prompt(prompt_code_override=...). Offering one as a
+                # language would also leak it into the glossary's columns.
+                if lang_code in AUXILIARY_PROMPTS:
+                    continue
 
                 # Find the display name from LANGUAGE_MAP
                 display_name_found = False

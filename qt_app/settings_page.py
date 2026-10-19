@@ -217,6 +217,7 @@ class SettingsPage(ScrollArea):
         self._lan_port = 8080
         # Set by MainWindow so the language selector can drive a global retranslate.
         self.on_ui_lang_changed = None
+        self.on_features_changed = None   # set by the main window: live nav hiding
         self.setWidgetResizable(True)
         self.enableTransparentBackground()
 
@@ -460,6 +461,23 @@ class SettingsPage(ScrollArea):
             lambda idx: backend.set_config("bilingual_color", self._bi_colors[idx][0]))
         self.bi_color_label = BodyLabel(tr("Translation Color", lang))
         gl_form.addRow(self.bi_color_label, self.bi_color)
+        # What sits between the original and the translation in Word bilingual
+        # output. Shown with \n / \t escapes since the value is usually a newline.
+        self.bi_sep = LineEdit()
+        self.bi_sep.setText(str(config.get("bilingual_separator", "\n") or "\n")
+                            .replace("\n", "\\n").replace("\t", "\\t"))
+        self.bi_sep.setClearButtonEnabled(True)
+        self.bi_sep.editingFinished.connect(
+            lambda: backend.set_config("bilingual_separator", self.bi_sep.text()))
+        self.bi_sep_label = BodyLabel(tr("Bilingual Separator", lang))
+        gl_form.addRow(self.bi_sep_label, self.bi_sep)
+        # SRT only: let the model move the cue boundaries before translating.
+        self.sub_reseg = SwitchButton()
+        self.sub_reseg.setChecked(config.get("subtitle_resegment_mode", False))
+        self.sub_reseg.checkedChanged.connect(
+            lambda v: backend.set_config("subtitle_resegment_mode", v))
+        self.sub_reseg_label = BodyLabel(tr("Subtitle Resegment", lang))
+        gl_form.addRow(self.sub_reseg_label, self.sub_reseg)
         self.live_stream = SwitchButton()
         self.live_stream.setChecked(config.get("live_stream_translation", False))
         self.live_stream.checkedChanged.connect(
@@ -745,6 +763,8 @@ class SettingsPage(ScrollArea):
         hidden). Same lan_hidden_features config the Web UI reads."""
         hidden = [k for k, (cb, _lbl) in self._feat_boxes.items() if not cb.isChecked()]
         backend.set_config("lan_hidden_features", hidden)
+        if self.on_features_changed:
+            self.on_features_changed(hidden)
 
     # --- data & storage handlers ---
     def _save_hist_max(self):

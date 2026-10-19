@@ -40,13 +40,20 @@ def _startup_warmup():
     # Real-Time Voice only waits for the model itself. No model / VRAM.
     try:
         from core.optional_modules import realtime_voice_available
-        if realtime_voice_available():
+        from core.module_manager import pending_installs
+        # A queued install must replace files the warm-up would lock.
+        if not pending_installs() and realtime_voice_available():
             from core.pipelines.video_translation_pipeline import warm_import_live_engine
             warm_import_live_engine()
     except Exception:  # noqa: BLE001
         pass
 
 
+try:   # finish uninstalls queued while their libs were loaded — BEFORE the warmup
+    from core.module_manager import run_pending_uninstalls   # thread imports them
+    run_pending_uninstalls()
+except Exception:  # noqa: BLE001
+    pass
 threading.Thread(target=_startup_warmup, daemon=True).start()
 try:   # let downloaded market plugins hook into the app (best-effort)
     from core import plugins_registry as _pr
@@ -518,6 +525,7 @@ def bootstrap():
             "ocr_model_size": get_selected_ocr_model(),
             "translate_subtitles": config.get("translate_subtitles", True),
             "subtitle_match_source_name": config.get("subtitle_match_source_name", True),
+            "subtitle_resegment_mode": config.get("subtitle_resegment_mode", False),
             "max_retries": config.get("max_retries", 4),
             # Show the RPM that's actually in effect: an explicit user value, or
             # the safety-net default when unset (so the UI isn't misleading).
@@ -532,6 +540,7 @@ def bootstrap():
             "dedup_context": config.get("dedup_context", False),
             "bilingual_bold": config.get("bilingual_bold", True),
             "bilingual_color": config.get("bilingual_color", ""),
+            "bilingual_separator": config.get("bilingual_separator", "\n"),
             "live_stream_translation": config.get("live_stream_translation", False),
             "web_vad": config.get("web_vad", "energy"),
             "live_vad_hang_ms": config.get("live_vad_hang_ms", 900),
@@ -569,6 +578,13 @@ def bootstrap():
         "translation_modes": _translation_modes_for_ui(),
         "labels": LABEL_TRANSLATIONS,
     }
+
+
+@app.get("/api/lan-features")
+def lan_features():
+    """Cheap poll target so normal LAN clients follow the admin's feature
+    checkboxes live (bootstrap is too heavy to re-fetch every few seconds)."""
+    return {"hidden": backend.get_config("lan_hidden_features", []) or []}
 
 
 @app.get("/api/sysmon")
@@ -663,12 +679,14 @@ async def update_config(payload: dict):
                "default_dst_lang", "default_glossary", "stt_model",
                "live_stt_model", "quick_stt_model", "ocr_model_size",
                "translate_subtitles", "subtitle_match_source_name",
+               "subtitle_resegment_mode",
                "max_retries", "rpm_limit",
                "auto_extract_glossary", "translation_mode",
                "translation_tone", "translation_length", "translation_style",
                "translate_with_context",
                "mask_placeholders", "dedup_context",
-               "bilingual_bold", "bilingual_color", "live_stream_translation",
+               "bilingual_bold", "bilingual_color", "bilingual_separator",
+               "live_stream_translation",
                "web_vad", "live_vad_hang_ms", "live_vad_sensitivity",
                "live_vad_max_seg_ms", "lan_mode", "lan_hidden_features",
                "use_china_mirror", "excel_shrink_to_fit", "excel_translate_sheet_names",
@@ -796,6 +814,19 @@ def save_interface(payload: dict):
     if key:  # only overwrite the stored key when a new one is supplied
         save_api_key_for_model(name, key.strip())
     return {"ok": True}
+
+
+@app.post("/api/interface/test")
+def test_interface_ep(payload: dict):
+    """One tiny request with the dialog's (possibly unsaved) values. Admin-only:
+    it can use the stored key and reach an arbitrary base_url."""
+    _block_in_server_mode()
+    from core.llm.online_translation import test_interface
+    name = (payload.get("name") or "").strip()
+    key = (payload.get("api_key") or "").strip() or (load_api_key_for_model(name) if name else "")
+    ok, detail = test_interface((payload.get("base_url") or "").strip(),
+                                (payload.get("model") or "").strip(), key)
+    return {"ok": ok, "detail": detail}
 
 
 @app.post("/api/interface/delete")
@@ -1122,12 +1153,17 @@ def _friendly_api_error(error, lang="en"):
         "insufficient_balance": "Err Insufficient Balance",
         "invalid_key": "Err Invalid Key",
         "server_error": "Err Server",
+        "unreachable": "Err Unreachable",    # preflight: interface can't be reached
+        "bad_request": "Err Bad Request",    # preflight: wrong model id / URL
     }
     key = keys.get(category, "Err Api Generic")
     labels = LABEL_TRANSLATIONS.get(lang) or {}
-    return (labels.get(key)
-            or LABEL_TRANSLATIONS.get("en", {}).get(key)
-            or "Translation stopped due to an API error.")
+    msg = (labels.get(key)
+           or LABEL_TRANSLATIONS.get("en", {}).get(key)
+           or "Translation stopped due to an API error.")
+    if category in ("unreachable", "bad_request"):
+        msg += f" ({str(error)[:200]})"   # the provider's own words help a lot here
+    return msg
 
 
 def _precreate_web_batch(session_id, batch_id, file_paths, file_ids, model,
@@ -1279,7 +1315,9 @@ def _run_translation(task_id, session_id, file_paths, model, use_online,
         _mark_web_queued_stopped(session_id, leftover)
         set_state(status="stopped", desc="Stopped")
     elif not outputs:
-        set_state(status="error", error="All files failed. See log.")
+        # One file: show its actual reason, not a generic pointer to the log.
+        set_state(status="error", error=(file_results[0][2] if total == 1 and file_results
+                                         else "All files failed. See log."))
     elif total == 1:
         u = _usage_summary()
         set_state(status="done", progress=1.0, desc="Translation completed",
@@ -1803,6 +1841,24 @@ def history_download(id: str, request: Request):
     return FileResponse(out, filename=os.path.basename(out))
 
 
+@app.get("/api/history/log")
+def history_log(id: str, request: Request):
+    """Zip of a record's own log (+ system.log for the host's admin) so a user can
+    send it for support. Session-scoped like the other history endpoints;
+    system.log is host-wide, so normal LAN users only get their own task log."""
+    import tempfile
+    from core.translation_history import TranslationHistoryManager
+    h = TranslationHistoryManager(log_dir=history_log_dir(request.state.session_id))
+    rec = h.get_record_by_id(id) if id else None
+    if not rec:
+        raise HTTPException(404, "Record not found")
+    dest = os.path.join(tempfile.mkdtemp(prefix="lh_log_"), "log.zip")
+    if not backend.build_log_bundle(rec, dest, include_system=_is_admin()):
+        raise HTTPException(404, "No log available for this record")
+    stem = os.path.splitext(os.path.basename(rec.get("input_file") or "translation"))[0]
+    return FileResponse(dest, filename=f"LinguaHaru-log-{stem}.zip")
+
+
 @app.post("/api/pick-folder")
 def pick_folder():
     """Open a native folder picker ON THE SERVER machine (local desktop use) and
@@ -2169,6 +2225,16 @@ def modules_download(payload: dict):
 # /download routes (a POST to /api/modules/model matched here with action="model"
 # -> "action must be install|uninstall|upgrade"). FastAPI matches in declaration
 # order, so static paths must come first.
+# Installs queued before a restart (a component they replace was in use): run
+# them now, before anything locks those files, through the normal job queue.
+try:
+    from core.module_manager import take_pending_installs
+    for _pn in take_pending_installs():
+        _enqueue_module_job(_pn, lambda _n=_pn: _run_module_job(_n, "install"))
+except Exception:  # noqa: BLE001 — must never block startup
+    pass
+
+
 @app.post("/api/modules/{action}")
 async def module_action(action: str, payload: dict):
     _block_in_server_mode()

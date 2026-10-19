@@ -12,6 +12,7 @@ from .subtitle_groups import (
     drop_fabricated_tags, flat, group_cues, join_texts, seconds, split_across_cues)
 from .txt_translation_pipeline import read_file_with_encoding
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 # Hours are optional in WebVTT: both HH:MM:SS.mmm and MM:SS.mmm are valid.
 _VTT_TIMESTAMP = re.compile(r"(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3}\s*-->")
@@ -39,7 +40,7 @@ def _load_for_writeback(file_path, temp_dir, original_json_path, translated_json
         original_data = json.load(f)
     with open(translated_json_path, encoding="utf-8") as f:
         translated_data = json.load(f)
-    translations = {item["count_src"]: item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data, stringify_keys=False)
     return layout, original_data, translations
 
 

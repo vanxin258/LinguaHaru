@@ -16,6 +16,7 @@ from rapidocr import RapidOCR
 
 from .skip_pipeline import should_translate
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 _ocr_engines = {}   # (size, ocr_lang) -> (kind, engine)
 # Serialize engine LOADING: two images OCR'd at once would otherwise both build
@@ -1269,7 +1270,7 @@ def write_translated_content_to_image(file_path, original_json_path, translated_
     with open(translated_json_path, encoding="utf-8") as f:
         translated_data = json.load(f)
 
-    translations = {item["count_src"]: item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data, stringify_keys=False)
 
     image = cv2.imdecode(np.fromfile(file_path, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:

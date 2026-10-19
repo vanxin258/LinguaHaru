@@ -798,16 +798,19 @@ def restore_translations_from_deduped(dst_translated_split_path, count_src_to_de
     
     # Build count_split -> translation mapping
     count_split_to_translation = {}
-    
+    same_ok_count_splits = set()
+
     for item in translated_results:
         if not isinstance(item, dict):
             continue
-            
+
         count_split = item.get("count_split")
         translated_text = item.get("translated", "")
-        
+
         if count_split is not None and translated_text:
             count_split_to_translation[count_split] = translated_text
+            if item.get("same_ok"):
+                same_ok_count_splits.add(count_split)
     
     app_logger.info(f"Found {len(count_split_to_translation)} translations")
     
@@ -832,15 +835,16 @@ def restore_translations_from_deduped(dst_translated_split_path, count_src_to_de
         
         # Get translation through mapping chain: count_src -> count_deduped -> count_split -> translation
         translated_value = original_value  # Default to original
-        
+        same_ok_value = False
+
         if count_src in count_src_to_deduped_map:
             count_deduped = count_src_to_deduped_map[count_src]
-            
+
             # Check if we have count_split mapping
             if count_deduped_to_split_map and count_deduped in count_deduped_to_split_map:
                 # Get all count_splits for this count_deduped
                 count_splits = count_deduped_to_split_map[count_deduped]
-                
+
                 # Combine translations from all splits
                 translations = []
                 for count_split in count_splits:
@@ -850,6 +854,9 @@ def restore_translations_from_deduped(dst_translated_split_path, count_src_to_de
                 if len(translations) == len(count_splits):
                     # Join all translations (in case text was split)
                     translated_value = _join_chunk_translations(translations)
+                    # same_ok only holds when EVERY chunk was marked: one
+                    # translated chunk means the text does need translating.
+                    same_ok_value = all(c in same_ok_count_splits for c in count_splits)
                 else:
                     # Partial chunks would produce a translation with missing
                     # middle content - fall back to the original instead
@@ -859,6 +866,7 @@ def restore_translations_from_deduped(dst_translated_split_path, count_src_to_de
                 # Fallback: try using count_deduped as count_split directly
                 if count_deduped in count_split_to_translation:
                     translated_value = count_split_to_translation[count_deduped]
+                    same_ok_value = count_deduped in same_ok_count_splits
                 else:
                     missing_translations += 1
                     app_logger.warning(f"No translation found for count_deduped: {count_deduped}")
@@ -872,6 +880,10 @@ def restore_translations_from_deduped(dst_translated_split_path, count_src_to_de
             "original": original_value,
             "translated": translated_value
         }
+        # The model declared this text needs no translation; write-back uses this
+        # to leave the original alone instead of rewriting identical text.
+        if same_ok_value:
+            entry["same_ok"] = True
         # Carry subtitle cue timing through (the SRT/VTT extractors emit these);
         # downstream QA reads them for reading-speed (CPS) checks.
         if "start_time" in item and "end_time" in item:

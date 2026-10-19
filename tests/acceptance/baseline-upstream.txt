@@ -1,0 +1,70 @@
+验收文档 3 份
+
+== Basic 140.de_rm.docx
+[INFO] Found 0 SmartArt diagram files in Word document
+[INFO] Extracted 0 translatable SmartArt text items
+[INFO] Extracted 0 Word chart text items
+[INFO] Extracted 4331 content items from document: Basic 140.de_rm
+[INFO] Translated Word document saved to: D:\LinguaHaru\tests\acceptance\_work\Basic 140.de_rm.docx\result\Basic 140.de_rm_en2zh.docx
+  [PASS] tbl 数量一致 (72)
+  [PASS] txbxContent 数量一致 (583)
+  [PASS] drawing 数量一致 (1035)
+  [PASS] hyperlink 数量一致 (1042)
+  [PASS] instrText 数量一致 (66)
+  [PASS] footnoteReference 数量一致 (0)
+  [PASS] endnoteReference 数量一致 (0)
+  [PASS] bookmarkStart 数量一致 (654)
+  [PASS] 域代码未丢失
+  [PASS] 图片锚点一致
+  [PASS] 超链接目标一致
+  [PASS] 提取项全部写回 (4331 条)
+    提取覆盖率约 94% (180726/190428 字符)
+    输出字符 243936,粗体 22695,斜体 18118(参考)
+
+== WITTMANN Group Directive Reporting and Escalation of Security-Relevant Events.docx
+[INFO] Extracted 0 translatable footnote items
+[INFO] Extracted 0 translatable endnote items
+[INFO] Found 0 SmartArt diagram files in Word document
+[INFO] Extracted 0 translatable SmartArt text items
+[INFO] Extracted 0 Word chart text items
+[INFO] Extracted 267 content items from document: WITTMANN Group Directive Reporting and Escalation of Security-Relevant Events
+[INFO] Translated Word document saved to: D:\LinguaHaru\tests\acceptance\_work\WITTMANN Group Directive Reporting and Escalation of Security-Relevant Events.docx\result\WITTMANN Group Directive Reporting and Escalation of Security-Relevant Events_en2zh.docx
+  [PASS] tbl 数量一致 (2)
+  [PASS] txbxContent 数量一致 (6)
+  [PASS] drawing 数量一致 (5)
+  [PASS] hyperlink 数量一致 (15)
+  [PASS] instrText 数量一致 (1)
+  [PASS] footnoteReference 数量一致 (0)
+  [PASS] endnoteReference 数量一致 (0)
+  [PASS] bookmarkStart 数量一致 (0)
+  [PASS] 域代码未丢失
+  [PASS] 图片锚点一致
+  [PASS] 超链接目标一致
+  [PASS] 提取项全部写回 (267 条)
+    提取覆盖率约 99% (15008/15061 字符)
+    输出字符 18081,粗体 2080,斜体 0(参考)
+
+== WITTMANN Group Security Incident Report Form.docx
+[INFO] Extracted 0 translatable footnote items
+[INFO] Extracted 0 translatable endnote items
+[INFO] Found 0 SmartArt diagram files in Word document
+[INFO] Extracted 0 translatable SmartArt text items
+[INFO] Extracted 0 Word chart text items
+[INFO] Extracted 71 content items from document: WITTMANN Group Security Incident Report Form
+[INFO] Translated Word document saved to: D:\LinguaHaru\tests\acceptance\_work\WITTMANN Group Security Incident Report Form.docx\result\WITTMANN Group Security Incident Report Form_en2zh.docx
+  [PASS] tbl 数量一致 (2)
+  [PASS] txbxContent 数量一致 (70)
+  [PASS] drawing 数量一致 (23)
+  [PASS] hyperlink 数量一致 (2)
+  [PASS] instrText 数量一致 (1)
+  [PASS] footnoteReference 数量一致 (0)
+  [PASS] endnoteReference 数量一致 (0)
+  [PASS] bookmarkStart 数量一致 (0)
+  [PASS] 域代码未丢失
+  [PASS] 图片锚点一致
+  [PASS] 超链接目标一致
+  [PASS] 提取项全部写回 (71 条)
+    提取覆盖率约 65% (3896/5982 字符)
+    输出字符 12018,粗体 1105,斜体 679(参考)
+
+合计 36 项检查,失败 0 项

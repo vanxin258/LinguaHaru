@@ -381,7 +381,8 @@ TEXTBOX_XML = """\
                     <a:prstGeom prst="rect"><a:avLst/></a:prstGeom></wps:spPr>
                   <wps:txbx>
                     <w:txbxContent>
-                      <w:p><w:r><w:t>Floating textbox message line</w:t></w:r></w:p>
+                      <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:ind w:left="425"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="20"/></w:rPr><w:t>Floating textbox message line</w:t></w:r></w:p>
+                      <w:p><w:pPr><w:ind w:left="850"/><w:rPr><w:sz w:val="16"/></w:rPr></w:pPr><w:r><w:rPr><w:sz w:val="16"/></w:rPr><w:t>Second textbox line</w:t></w:r></w:p>
                     </w:txbxContent>
                   </wps:txbx>
                   <wps:bodyPr rot="0" vert="horz"/>
@@ -421,6 +422,16 @@ def test_textbox_raw_xml():
     tb = xml[xml.find("<w:txbxContent>"):xml.find("</w:txbxContent>")]
     check("textbox text translated inside txbxContent",
           T + "Floating textbox message line" in tb, tb)
+    # Formatting is per paragraph: write-back must not flatten the box to the
+    # first run's style (numbering/indent/size all used to be dropped).
+    paras = tb.split("<w:p>")
+    check("textbox first paragraph keeps numbering and indent",
+          len(paras) >= 3 and "<w:numPr>" in paras[1] and 'w:left="425"' in paras[1], tb)
+    check("textbox first paragraph keeps run formatting",
+          "<w:b/>" in paras[1] and 'w:sz w:val="20"' in paras[1], tb)
+    check("textbox second paragraph keeps its own formatting",
+          len(paras) >= 3 and "<w:b/>" not in paras[2]
+          and 'w:sz w:val="16"' in paras[2] and 'w:left="850"' in paras[2], tb)
     check("body paragraph translated",
           T + "Body paragraph beside the textbox." in xml, xml[:600])
 

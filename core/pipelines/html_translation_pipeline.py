@@ -16,6 +16,7 @@ from .epub_translation_pipeline import (
 from .skip_pipeline import should_translate
 from .txt_translation_pipeline import read_file_with_encoding
 from core.log_config import app_logger
+from core.engine.writeback_same_ok import build_writeback_translation_map
 
 
 def _parse_html(content):
@@ -102,7 +103,7 @@ def write_translated_content_to_html(file_path, original_json_path, translated_j
     with open(translated_json_path, encoding="utf-8") as f:
         translated_data = json.load(f)
 
-    translations = {item["count_src"]: item["translated"] for item in translated_data}
+    translations = build_writeback_translation_map(translated_data, stringify_keys=False)
     by_block = {item["block_index"]: item for item in original_data
                 if item.get("type") not in ("attr", "head_inline")}
     by_head = {item["head_index"]: item for item in original_data

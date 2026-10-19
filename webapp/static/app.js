@@ -479,6 +479,7 @@ async function openIfaceConfig(name) {
     } catch {}
   }
   $("iface-modal").hidden = false;
+  if ($("if-test-result")) $("if-test-result").hidden = true;
 }
 function closeIfaceConfig() { $("iface-modal").hidden = true; }
 async function saveIfaceConfig() {
@@ -491,6 +492,21 @@ async function saveIfaceConfig() {
       max_retries: $("if-retries").value.trim() }) });
   closeIfaceConfig(); loadInterfaces();
 }
+// Test the values as typed (no save needed). A blank key = the stored one.
+async function testIfaceConfig() {
+  const out = $("if-test-result"), btn = $("if-test");
+  out.hidden = false; out.style.color = ""; btn.disabled = true;
+  out.textContent = _label("Testing Interface", "正在测试…");
+  try {
+    const r = await api("/api/interface/test", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: $("if-name").value.trim(), base_url: $("if-base").value.trim(),
+        model: $("if-model").value.trim(), api_key: $("if-key").value }) });
+    out.style.color = r.ok ? "#16a34a" : "#e0503c";
+    out.textContent = _label(r.ok ? "Interface OK" : "Interface Failed", r.ok ? "接口正常" : "接口不可用") + " — " + r.detail;
+  } catch (e) {
+    out.style.color = "#e0503c"; out.textContent = String(e);
+  } finally { btn.disabled = false; }
+}
 async function deleteIface() {
   if (!_ifaceEditing) return;
   await api("/api/interface/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: _ifaceEditing }) });
@@ -499,6 +515,7 @@ async function deleteIface() {
 if ($("add-interface")) $("add-interface").onclick = () => openIfaceConfig(null);
 if ($("if-cancel")) $("if-cancel").onclick = closeIfaceConfig;
 if ($("if-save")) $("if-save").onclick = saveIfaceConfig;
+if ($("if-test")) $("if-test").onclick = testIfaceConfig;
 if ($("if-delete")) $("if-delete").onclick = deleteIface;
 if ($("iface-modal")) $("iface-modal").onclick = (e) => { if (e.target.id === "iface-modal") closeIfaceConfig(); };
 
@@ -635,6 +652,8 @@ async function boot() {
   if ($("set-translation-cache")) { $("set-translation-cache").checked = !!c.translation_cache; refreshCacheStats(); }
   if ($("set-bi-bold")) $("set-bi-bold").checked = c.bilingual_bold !== false;
   if ($("set-bi-color")) $("set-bi-color").value = c.bilingual_color || "";
+  if ($("set-bi-sep")) $("set-bi-sep").value = String(c.bilingual_separator ?? "\n").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+  if ($("set-sub-reseg")) $("set-sub-reseg").checked = c.subtitle_resegment_mode === true;
   if ($("set-live-stream")) $("set-live-stream").checked = !!c.live_stream_translation;
   if ($("set-web-vad")) $("set-web-vad").value = c.web_vad || "energy";
   if ($("set-vad-hang")) $("set-vad-hang").value = String(c.live_vad_hang_ms || 900);
@@ -877,6 +896,28 @@ function applyServerMode() {
   $("apikey-warning").hidden = true;
 }
 
+// Show/hide what the admin unchecked: page tabs (for everyone, like the Qt nav)
+// + inline options tagged data-feat (normal LAN users only, pagesOnly=false).
+// Idempotent (also un-hides), so it can re-run live.
+const _LAN_PAGE_TABS = ["translate", "live", "glossary", "proofread", "history"];
+function _applyLanHidden(hidden, pagesOnly = false) {
+  const show = (el, on) => { el.style.display = on ? "" : "none"; };
+  _LAN_PAGE_TABS.forEach((t) => {
+    const btn = document.querySelector(`.tab[data-tab="${t}"]`);
+    if (btn) show(btn, !hidden.includes(t));
+  });
+  if (!pagesOnly) {
+    document.querySelectorAll("[data-feat]:not(.lan-feat)").forEach((el) => show(el, !hidden.includes(el.dataset.feat)));
+    // If every PDF sub-option is hidden, drop the now-empty "PDF Options" header.
+    const pdfCard = $("pdf-options");
+    const head = pdfCard && pdfCard.querySelector(".pdf-options-head");
+    if (head) show(head, !!pdfCard.querySelector(".pdf-opt:not([style*='display: none'])"));
+  }
+  // If the active tab got hidden, fall back to the primary Translate page.
+  const active = document.querySelector(".tab.active");
+  if (active && active.style.display === "none") document.querySelector('.tab[data-tab="quick"]').click();
+}
+
 // Role gating (LAN mode): a device that isn't the admin sees a translate-only UI;
 // the management pages (settings / plugins / interface / server model picker) are
 // hidden. An "Admin Login" entry (shown only when a LAN admin password exists)
@@ -886,25 +927,22 @@ function applyRole() {
   const c = BOOT.config || {};
   if (!isAdmin) {
     document.body.classList.add("user-role");
-    const hidden = c.lan_hidden_features || [];
     _hideTabs(["interface", "modules", "settings"]);   // always admin-only
-    _hideTabs(hidden);                                 // admin-hidden pages (tab keys)
-    // Admin-hidden inline options (bilingual / subtitles / manga / pdf-*), each
-    // tagged with data-feat on its container.
-    document.querySelectorAll("[data-feat]").forEach((el) => {
-      if (hidden.includes(el.dataset.feat)) el.style.display = "none";
-    });
-    // If every PDF sub-option is hidden, drop the now-empty "PDF Options" header.
-    const pdfCard = $("pdf-options");
-    if (pdfCard && !pdfCard.querySelector(".pdf-opt:not([style*='display: none'])")) {
-      const head = pdfCard.querySelector(".pdf-options-head");
-      if (head) head.style.display = "none";
-    }
     const modelField = $("model").closest(".field");
     if (modelField) modelField.style.display = "none";
-    // If the active tab got hidden, fall back to the primary Translate page.
-    const active = document.querySelector(".tab.active");
-    if (active && active.style.display === "none") switchTab("quick");
+    _applyLanHidden(c.lan_hidden_features || []);
+    // Follow the admin's checkbox changes live (no page refresh needed).
+    setInterval(async () => {
+      try {
+        const r = await api("/api/lan-features");
+        if (JSON.stringify(r.hidden) !== JSON.stringify(BOOT.config.lan_hidden_features || [])) {
+          BOOT.config.lan_hidden_features = r.hidden;
+          _applyLanHidden(r.hidden);
+        }
+      } catch (e) { /* server briefly unreachable: keep the current view */ }
+    }, 5000);
+  } else {
+    _applyLanHidden(c.lan_hidden_features || [], true);
   }
   // The login entry only makes sense on a LAN host that HAS an admin password.
   const grp = $("admin-login-group");
@@ -1512,6 +1550,7 @@ document.querySelectorAll(".lan-feat").forEach((cb) => {
     const hidden = [...document.querySelectorAll(".lan-feat")].filter((x) => !x.checked).map((x) => x.dataset.feat);
     saveConfig({ lan_hidden_features: hidden });
     if (BOOT.config) BOOT.config.lan_hidden_features = hidden;
+    _applyLanHidden(hidden, true);   // admin's own tabs follow live (Qt parity)
     toast(_label("Saved", "已保存"), "ok");
   };
 });
@@ -1555,6 +1594,8 @@ if ($("set-image-lama")) $("set-image-lama").onchange = async () => {
 };
 if ($("set-bi-bold")) $("set-bi-bold").onchange = () => saveConfig({ bilingual_bold: $("set-bi-bold").checked });
 if ($("set-bi-color")) $("set-bi-color").onchange = () => saveConfig({ bilingual_color: $("set-bi-color").value });
+if ($("set-bi-sep")) $("set-bi-sep").onchange = () => saveConfig({ bilingual_separator: $("set-bi-sep").value });
+if ($("set-sub-reseg")) $("set-sub-reseg").onchange = () => saveConfig({ subtitle_resegment_mode: $("set-sub-reseg").checked });
 if ($("set-live-stream")) $("set-live-stream").onchange = () => {
   const v = $("set-live-stream").checked;
   if (BOOT.config) BOOT.config.live_stream_translation = v;   // applies without reload
@@ -2023,6 +2064,16 @@ async function moduleAction(name, action, btn, statTd) {
       // (Was the bug: card still showed "未安装" after a successful install.)
       try { BOOT = await api("/api/bootstrap"); } catch (e) {}
       renderModules();
+    } else if (s.output === "__INSTALL_PENDING_RESTART__") {
+      // A component it must replace is in use -> queued; the next start installs it.
+      statTd.innerHTML = pill("busy", _label("Restart to apply", "重启后生效"), ICON.check);
+      $("modules-status").textContent = `${name}: ` + _label("Install After Restart",
+        "有组件正在使用中，已安排在下次启动程序时自动安装。重启程序即可完成。");
+    } else if (s.output === "__UNINSTALL_PENDING_RESTART__") {
+      // In use this session -> queued; the next start finishes it automatically.
+      statTd.innerHTML = pill("busy", _label("Restart to apply", "重启后生效"), ICON.check);
+      $("modules-status").textContent = `${name}: ` + _label("Uninstall After Restart",
+        "插件正在使用中，已安排在下次启动程序时自动卸载。重启程序即可完成。");
     } else {
       statTd.innerHTML = pill("bad", _label("Failed", "失败"), ICON.cross);
       $("modules-status").textContent = `${name} ${_label("Failed", "操作失败")}: ` + (s.output || "").slice(-300);
@@ -3214,6 +3265,10 @@ function buildHistoryDetail(r) {
     _histActBtn(acts, _label("Download", "下载"),
       () => window.open("/api/history/download?id=" + encodeURIComponent(r.id), "_blank"));
   }
+  if (r.log_file_path) {   // zip of this run's log, to send for support
+    _histActBtn(acts, _label("Download Log", "下载日志"),
+      () => window.open("/api/history/log?id=" + encodeURIComponent(r.id), "_blank"));
+  }
   if (_histResumable(r)) _histActBtn(acts, _label("Continue Translation", "继续翻译"), () => resumeHistory(r.id), "primary");
   _histActBtn(acts, _label("Delete Record", "删除"), () => deleteHistory(r.id), "danger");
   box.appendChild(acts);
@@ -3241,6 +3296,12 @@ function buildBatchDetail(recs) {
       d.textContent = _label("Download", "下载");
       d.onclick = (e) => { e.stopPropagation(); window.open("/api/history/download?id=" + encodeURIComponent(r.id), "_blank"); };
       row.appendChild(d);
+    }
+    if (r.log_file_path) {
+      const lg = document.createElement("button"); lg.type = "button"; lg.className = "hist-act";
+      lg.textContent = _label("Download Log", "下载日志");
+      lg.onclick = (e) => { e.stopPropagation(); window.open("/api/history/log?id=" + encodeURIComponent(r.id), "_blank"); };
+      row.appendChild(lg);
     }
     if (_histResumable(r)) {
       const b = document.createElement("button"); b.type = "button"; b.className = "hist-act primary";
