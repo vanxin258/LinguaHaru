@@ -97,3 +97,39 @@ def test_numpages_has_own_placeholder(tmp_path):
     assert "Company confidential page {{PAGE_NUMBER}} of {{TOTAL_PAGES}}" in values
     instrs = re.findall(r'w:instr="([^"]+)"', paras[4]._p.xml)
     assert [i.strip() for i in instrs] == ["NUMPAGES", "PAGE"]
+
+
+def test_unresolved_marker_never_printed(tmp_path):
+    """A translation that still carries {{HLINK_n}} — the item's field_info is
+    gone (src.json left over from an older run), or a cached / hand-edited reply
+    — must not print the marker into the document."""
+    src = str(tmp_path / "stale.docx")
+    doc = Document()
+    body = doc.element.body
+    body.insert(len(body) - 1, parse_xml(
+        f'<w:p {nsdecls("w")}>'
+        '<w:r><w:t xml:space="preserve">See </w:t></w:r>'
+        '<w:hyperlink w:anchor="_bm1"><w:r><w:t>Details</w:t></w:r></w:hyperlink>'
+        '<w:r><w:t xml:space="preserve"> for more.</w:t></w:r></w:p>'))
+    doc.save(src)
+
+    src_json = extract_word_content_to_json(src, str(tmp_path / "temp"))
+    with open(src_json, encoding="utf-8") as f:
+        items = json.load(f)
+    assert any("{{HLINK_1}}" in i["value"] for i in items)
+    for item in items:                       # src.json from before HLINK support
+        item.pop("field_info", None)
+    with open(src_json, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
+
+    dst_json = str(tmp_path / "dst.json")
+    with open(dst_json, "w", encoding="utf-8") as f:
+        json.dump([{"count_src": i["count_src"],
+                    "translated": i["value"].replace("See", "Ver")} for i in items],
+                  f, ensure_ascii=False)
+    result = write_translated_content_to_word(
+        src, src_json, dst_json, str(tmp_path / "temp"), str(tmp_path / "result"),
+        src_lang="en", dst_lang="es")
+
+    text = _text(Document(result).paragraphs[0])
+    assert "HLINK" not in text and "{{" not in text, text

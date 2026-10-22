@@ -165,8 +165,34 @@ def _loads_lenient(text):
 
 
 # Structural placeholders that must survive translation untouched:
-# {{FIELD...}} / {{FOOTNOTE_REF_n}} etc., [formula_n], and line markers
-PLACEHOLDER_PATTERN = re.compile(r'\{\{[^}]+\}\}|\[formula_\d+\]|[␊␍]')
+# {{FIELD...}} / {{FOOTNOTE_REF_n}} etc., [formula_n], and the line/tab markers
+# (␉ is a tab; it is sent as a placeholder so the model cannot turn it into the
+# JSON escape \t, which a double-escaped reply would return as literal text).
+PLACEHOLDER_PATTERN = re.compile(r'\{\{[^}]+\}\}|\[formula_\d+\]|[␊␍␉]')
+
+
+_OPEN_BRACE = r'[\{｛]'
+_CLOSE_BRACE = r'[\}｝]'
+
+
+def normalize_placeholders(original, translated):
+    """Rewrite the marker variants a model actually produces back to the exact
+    token the source used — ``{HLINK_1}``, ``{{ HLINK_1 }}``, full-width braces,
+    doubled braces — so a salvageable reply neither gets retried nor reaches
+    write-back in a form nothing can rebuild.
+
+    Only tokens present in the SOURCE are rewritten, so text that merely
+    contains braces is left alone, and a marker the model invented stays an
+    error (``_placeholders_preserved`` still rejects it)."""
+    if not isinstance(translated, str) or ("{" not in translated and "｛" not in translated):
+        return translated
+    tokens = {t for t in PLACEHOLDER_PATTERN.findall(original or "") if t.startswith("{")}
+    for token in tokens:
+        inner = token[2:-2]
+        pattern = (_OPEN_BRACE + r"{1,3}\s*" + re.escape(inner)
+                   + r"\s*" + _CLOSE_BRACE + r"{1,3}")
+        translated = re.sub(pattern, lambda _m, t=token: t, translated)
+    return translated
 
 
 def _placeholders_preserved(original, translated):
@@ -582,6 +608,11 @@ def process_translation_results(original_text, translated_text, SRC_SPLIT_JSON_P
         # (null / number / list) to "" so only that one id is treated as missing
         # -> failed, siblings accepted.
         translated_value, claimed_same_ok = extract_translation_result(translated_json, key)
+
+        # Repair the marker variants a model produces ({HLINK_1}, spaces or
+        # full-width braces) back to the token the source used, before anything
+        # validates or stores it.
+        translated_value = normalize_placeholders(value, translated_value)
 
         # The model's same_ok claim is an opinion; honoring it wrongly ships the
         # original untranslated and silently, so it only counts when the text

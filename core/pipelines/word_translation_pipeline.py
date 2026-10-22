@@ -29,6 +29,17 @@ from .word.bilingual import (
 )
 
 
+def _restore_text_markers(text):
+    """Turn the pipeline's line/tab placeholders back into real characters.
+
+    Tabs travel to the model as the ␉ placeholder, line breaks as ␊/␍: inside
+    the JSON batch a real tab is only ever shown as the backslash-t escape, and
+    a double-escaped reply would land in the document as two literal characters
+    instead of a w:tab element.
+    """
+    return text.replace("␊", "\n").replace("␍", "\r").replace("␉", "\t")
+
+
 # NOTE: The bilingual helper functions have been moved to pipeline/word/bilingual.py
 # The functions are re-exported here for backwards compatibility:
 # - set_current_target_language
@@ -397,9 +408,9 @@ def _update_word_para_container(tree, original_data, translations, namespaces,
         translated_text = translations.get(item_id)
         if not translated_text:
             continue
-        translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+        translated_text = _restore_text_markers(translated_text)
         if bilingual_mode:
-            original_text = item.get("value", "").replace("␊", "\n").replace("␍", "\r")
+            original_text = _restore_text_markers(item.get("value", ""))
             translated_text = create_bilingual_text(original_text, translated_text)
 
         elem_id = item.get(id_key)
@@ -484,10 +495,10 @@ def update_word_charts(temp_dir, original_data, translations, namespaces, biling
                     continue
                 idx = item["node_index"]
                 if 0 <= idx < len(nodes):
-                    text = translated.replace("␊", "\n").replace("␍", "\r")
+                    text = _restore_text_markers(translated)
                     if bilingual_mode:
                         text = create_bilingual_text(
-                            item.get("value", "").replace("␊", "\n").replace("␍", "\r"), text)
+                            _restore_text_markers(item.get("value", "")), text)
                     nodes[idx][0].text = text
             with open(path, "wb") as f:
                 f.write(etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone="yes"))
@@ -560,9 +571,9 @@ def update_alttext_in_part(tree, part_name, original_data, translations, namespa
         translated_text = translations.get(item_id)
         if not translated_text:
             continue
-        translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+        translated_text = _restore_text_markers(translated_text)
         if bilingual_mode:
-            original_text = item.get("value", "").replace("␊", "\n").replace("␍", "\r")
+            original_text = _restore_text_markers(item.get("value", ""))
             translated_text = create_bilingual_text(original_text, translated_text)
 
         kind = item.get("elem_kind")
@@ -1458,9 +1469,12 @@ def extract_paragraph_structure(paragraph, namespaces, exclude_textbox_runs=True
     structure['total_runs'] = len(runs)
     
     for run_idx, run in enumerate(runs):
+        run_text = ''.join(t.text or '' for t in run.xpath('./w:t', namespaces=namespaces))
+        run_text += '\t' * len(run.xpath('./w:tab', namespaces=namespaces))
         run_info = {
             'index': run_idx,
             'has_text': bool(run.xpath('.//w:t', namespaces=namespaces)),
+            'text': run_text,
             'has_fields': bool(run.xpath('.//w:fldChar | .//w:instrText | .//w:fldSimple', namespaces=namespaces)),
             'has_drawings': bool(run.xpath('.//w:drawing | .//w:pict | .//mc:AlternateContent', namespaces=namespaces)),
             'has_breaks': bool(run.xpath('.//w:br | .//w:cr | .//w:tab', namespaces=namespaces)),
@@ -2051,6 +2065,19 @@ def _is_symbol_rpr(rpr_xml):
 
 _MARKER_RE = re.compile(r'\{\{[^}]+\}\}|\[formula_\d+\]')
 
+# Brace-wrapped marker names that are only ever pipeline markers, never prose,
+# matched tolerantly (one or two braces, ASCII or full-width) so a mangled
+# marker cannot slip into the document as text. See the write-back guard in
+# update_paragraph_text_with_enhanced_preservation. {{SUP_n}}/{{SUB_n}}/{{SYM_n}}
+# are deliberately absent: a document may contain that text literally (the
+# extractor's allow_markers check) and dropping it would lose real content.
+_MARKER_NAME_RE = re.compile(
+    r"[\{｛]{1,2}\s*"
+    r"(?:(?:/?HLINK|INLINE|FOOTNOTE_REF|ENDNOTE_REF)_\d+"
+    r"|FIELD(?::[^}｝]*)?"
+    r"|PAGE_NUMBER|TOTAL_PAGES|DATE|TIME)"
+    r"\s*[\}｝]{1,2}")
+
 _NOTE_REF_STYLES = ('FootnoteReference', 'EndnoteReference')
 _VERT_RPR_RE = re.compile(r'vertAlign w:val="(?:super|sub)script"|rStyle w:val="(?:Footnote|Endnote)Reference"')
 
@@ -2346,10 +2373,15 @@ def extract_paragraph_text_with_variables_and_formulas(paragraph, namespaces, nu
             })
     
     # Clean up text by removing leading numbering patterns (now passing numbering_info)
-    cleaned_text = remove_leading_numbering_patterns(full_text, numbering_info)
-    
+    cleaned_text = remove_leading_numbering_patterns(full_text, numbering_info).lstrip()
+    # Tabs become the ␉ placeholder (see _restore_text_markers): the model would
+    # otherwise receive a tab only as JSON's backslash-t escape and could hand
+    # it back double-escaped, i.e. as two literal characters in the document.
+    # Whitespace-only text keeps its plain form so callers still skip it.
+    if cleaned_text.strip():
+        cleaned_text = cleaned_text.replace("\t", "␉")
     return (
-        cleaned_text.lstrip(),
+        cleaned_text,
         field_info if field_info else None,
         math_info if math_info else None
     )
@@ -3262,11 +3294,11 @@ def write_translated_content_to_word(file_path, original_json_path, translated_j
                                  "footnote", "endnote", "comment", "chart", "word_alttext"]:
                 continue
 
-            translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+            translated_text = _restore_text_markers(translated_text)
 
             # Create bilingual text if in bilingual mode
             if bilingual_mode:
-                original_text = item.get("value", "").replace("␊", "\n").replace("␍", "\r")
+                original_text = _restore_text_markers(item.get("value", ""))
                 text_to_apply = create_bilingual_text(original_text, translated_text)
             else:
                 text_to_apply = translated_text
@@ -3401,7 +3433,7 @@ def update_footnotes_with_translations(footnotes_tree, original_data, translatio
         if not translated_text:
             continue
             
-        translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+        translated_text = _restore_text_markers(translated_text)
         
         footnote_id = item.get("footnote_id")
         paragraph_index = item.get("paragraph_index")
@@ -3478,7 +3510,7 @@ def update_smartart_with_translations(temp_dir, original_data, translations, nam
                         app_logger.warning(f"Missing translation for SmartArt count {count}")
                         continue
                     
-                    translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+                    translated_text = _restore_text_markers(translated_text)
                     
                     # Find the shape using shape_index
                     shapes_with_txbody = drawing_tree.xpath('.//dsp:sp[.//dsp:txBody]', namespaces=namespaces)
@@ -3522,7 +3554,7 @@ def update_smartart_with_translations(temp_dir, original_data, translations, nam
                     if not translated_text:
                         continue
                     
-                    translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+                    translated_text = _restore_text_markers(translated_text)
                     original_text = item.get('original_text', '')
                     
                     # Find all dgm:pt elements that contain text
@@ -4467,6 +4499,28 @@ def update_paragraph_text_with_enhanced_preservation(paragraph, new_text, namesp
     if marker_runs and len(marker_runs) == len(field_info) and not math_info:
         field_info = None
 
+    # A marker that nothing here can rebuild - the item lost its field_info (a
+    # src.json carried over from an older run), or the translation came from a
+    # cached / hand-edited result - is not content: print its text, never the
+    # marker itself.
+    if _MARKER_NAME_RE.search(new_text):
+        known = set(marker_runs)
+        for f in (field_info or []) + (math_info or []):
+            known.update((f.get('display_text'), f.get('close_text'), f.get('placeholder')))
+        dropped = []
+
+        def _drop_unresolved(match):
+            if match.group(0) in known:
+                return match.group(0)
+            dropped.append(match.group(0))
+            return ""
+
+        new_text = _MARKER_NAME_RE.sub(_drop_unresolved, new_text)
+        if dropped:
+            app_logger.warning(
+                f"Dropped {len(dropped)} marker(s) with no rebuild info: "
+                + ", ".join(sorted(set(dropped))))
+
     # Find all runs that are direct children of the paragraph
     all_runs = paragraph.xpath('./w:r', namespaces=namespaces)
     
@@ -4555,22 +4609,51 @@ def update_paragraph_text_with_enhanced_preservation(paragraph, new_text, namesp
     # italic/color/vertAlign/etc.) instead of collapsing to one format.
     original_run_infos = _collect_text_run_infos(text_runs, namespaces)
 
+    # The gap between a leading inline drawing and its caption ("[icon] ␣
+    # VORSICHT") is layout, not translated content: keep it when the new text
+    # has no leading whitespace (CJK targets, or the bilingual original prefix).
+    leading_sep = _leading_separator_text(text_runs, namespaces)
+    if leading_sep and new_text and not new_text[0].isspace():
+        new_text = leading_sep + new_text
+
     # Get formatting from the first text run if available, or use original structure
     formatting = None
     if original_structure and original_structure.get('runs_info'):
-        # Find the first text run with formatting
+        # Find the first text run with formatting. Whitespace-only runs are
+        # skipped: the separator between an inline drawing and its caption
+        # ("[icon] VORSICHT") carries the separator's own formatting, which
+        # would restyle text that never belonged to it.
         for run_info in original_structure['runs_info']:
-            if run_info.get('has_text') and run_info.get('rPr_xml') and not _is_marker_rpr(run_info['rPr_xml']):
-                try:
-                    formatting = etree.fromstring(run_info['rPr_xml'])
-                    break
-                except:
-                    pass
-    
+            if not run_info.get('has_text') or not run_info.get('rPr_xml'):
+                continue
+            if not (run_info.get('text') or '').strip():
+                continue
+            if _is_marker_rpr(run_info['rPr_xml']):
+                continue
+            try:
+                formatting = etree.fromstring(run_info['rPr_xml'])
+                break
+            except:
+                pass
+
     if formatting is None and text_runs:
         # Fallback to first text run formatting, skipping superscript/
         # note-reference runs (a leading footnote reference would otherwise
-        # turn the whole translation superscript)
+        # turn the whole translation superscript) and whitespace-only runs
+        # (same separator-formatting problem as above).
+        for run in text_runs:
+            run_text = ''.join(t.text or '' for t in run.xpath('./w:t', namespaces=namespaces))
+            if not run_text.strip():
+                continue
+            rPr_elements = run.xpath('./w:rPr', namespaces=namespaces)
+            if rPr_elements and _is_marker_rpr(etree.tostring(rPr_elements[0])):
+                continue
+            formatting = rPr_elements[0] if rPr_elements else None
+            break
+
+    if formatting is None and text_runs:
+        # Paragraph only had whitespace-bearing runs: fall back to the first
+        # run with any formatting.
         for run in text_runs:
             rPr_elements = run.xpath('./w:rPr', namespaces=namespaces)
             if rPr_elements and _is_marker_rpr(etree.tostring(rPr_elements[0])):
@@ -5003,6 +5086,32 @@ def process_math_placeholder(paragraph, placeholder, math_mapping, namespaces, f
     
     return current_run
 
+def _object_run_neighbour(run, step, namespaces):
+    """True when the nearest run sibling in `step` direction holds an inline
+    drawing/picture (the "⚠️" icon in front of a caption)."""
+    el = run.getprevious() if step < 0 else run.getnext()
+    while el is not None and el.tag != f"{{{namespaces['w']}}}r":
+        el = el.getprevious() if step < 0 else el.getnext()
+    if el is None:
+        return False
+    return bool(el.xpath('./w:drawing | ./w:pict | ./mc:AlternateContent',
+                         namespaces=namespaces))
+
+
+def _leading_separator_text(text_runs, namespaces):
+    """Whitespace of a leading run that only separates an inline drawing from
+    the caption that follows it, or "" when there is no such gap."""
+    if not text_runs:
+        return ""
+    run = text_runs[0]
+    text = "".join(t.text or "" for t in run.xpath('./w:t', namespaces=namespaces))
+    if not text or text.strip():
+        return ""
+    if not _object_run_neighbour(run, -1, namespaces):
+        return ""
+    return text
+
+
 def _collect_text_run_infos(text_runs, namespaces):
     """Capture (rPr_xml, text, length) for each plain text run before removal.
 
@@ -5011,6 +5120,11 @@ def _collect_text_run_infos(text_runs, namespaces):
     length reflects what the user sees. Runs containing any non-text inline
     object would not reach here (they are filtered upstream), but as a guard we
     still only read w:t/w:tab content.
+
+    `separator` marks a whitespace-only run that sits next to an inline
+    drawing - it is the gap between an icon and its caption, not an inter-word
+    space, so it has to survive translation even when the target text has no
+    whitespace there (e.g. Chinese).
     """
     infos = []
     for run in text_runs:
@@ -5024,7 +5138,10 @@ def _collect_text_run_infos(text_runs, namespaces):
         rPr_elements = run.xpath('./w:rPr', namespaces=namespaces)
         rPr_xml = etree.tostring(rPr_elements[0]) if rPr_elements else None
         infos.append({'rPr_xml': rPr_xml, 'text': text, 'length': len(text),
-                      'is_marker': _run_marker_kind(run, namespaces) is not None})
+                      'is_marker': _run_marker_kind(run, namespaces) is not None,
+                      'separator': not text.strip() and
+                      (_object_run_neighbour(run, -1, namespaces)
+                       or _object_run_neighbour(run, 1, namespaces))})
     return infos
 
 
@@ -5089,7 +5206,19 @@ def add_text_with_distributed_run_formatting(paragraph, text, namespaces, origin
     # Indices of runs that originally carried text; empty runs are recreated
     # empty (preserving structure) and receive no characters.
     meaningful = [idx for idx, i in enumerate(original_run_infos) if i['length'] > 0]
-    total_length = sum(original_run_infos[idx]['length'] for idx in meaningful)
+    # Runs that only held whitespace (the separator between an inline drawing
+    # and its caption, e.g. "[icon] VORSICHT") must not receive translated
+    # characters: they carry the separator's formatting (font/size/weight of a
+    # plain space), so a proportional split would restyle the first character of
+    # the translation. They only take whitespace that sits at their position, so
+    # word spacing in Latin targets survives.
+    ws_only = {idx for idx in meaningful
+               if not (original_run_infos[idx].get('text') or '').strip()}
+    content = [idx for idx in meaningful if idx not in ws_only]
+    if not content:
+        # Paragraph was nothing but whitespace: keep the old behaviour.
+        content, ws_only = meaningful, set()
+    total_length = sum(original_run_infos[idx]['length'] for idx in content)
     if total_length == 0:
         # Defensive: nothing to base proportions on, fall back to first run.
         add_text_with_enhanced_formatting(
@@ -5101,7 +5230,7 @@ def add_text_with_distributed_run_formatting(paragraph, text, namespaces, origin
 
     chars = text
     char_index = 0
-    last_meaningful = meaningful[-1]
+    last_meaningful = content[-1]
 
     for idx, info in enumerate(original_run_infos):
         run = etree.SubElement(paragraph, f"{{{namespaces['w']}}}r")
@@ -5112,7 +5241,20 @@ def add_text_with_distributed_run_formatting(paragraph, text, namespaces, origin
             # Preserve an originally-empty run as empty.
             continue
 
-        if idx == last_meaningful:
+        if idx in ws_only:
+            # Consume only whitespace sitting at the current position, up to
+            # this run's original width; emit an empty run otherwise.
+            end = char_index
+            limit = min(len(chars), char_index + info['length'])
+            while end < limit and chars[end].isspace():
+                end += 1
+            run_text = chars[char_index:end]
+            char_index = end
+            if not run_text and info.get('separator'):
+                # Gap between an inline drawing and its caption: keep it even
+                # though the translation has no whitespace there.
+                run_text = info['text']
+        elif idx == last_meaningful:
             run_text = chars[char_index:]
             char_index = len(chars)
         else:
@@ -5459,7 +5601,7 @@ def update_numbering_xml_with_translations(numbering_tree, original_data, transl
             translated_text = translations.get(item_id)
             
             if translated_text:
-                translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+                translated_text = _restore_text_markers(translated_text)
                 
                 # Find the corresponding lvlText element using xpath
                 element_xpath = item.get("element_xpath")
@@ -5487,7 +5629,7 @@ def update_numbering_xml_with_translations(numbering_tree, original_data, transl
             translated_text = translations.get(item_id)
             
             if translated_text:
-                translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+                translated_text = _restore_text_markers(translated_text)
                 
                 # Find the text node using the original text value
                 original_text = item.get("original_text", "")
@@ -5609,8 +5751,8 @@ def update_footnotes_with_bilingual_format(footnotes_tree, original_data, transl
         if not translated_text:
             continue
 
-        translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
-        original_text = item.get("value", "").replace("␊", "\n").replace("␍", "\r")
+        translated_text = _restore_text_markers(translated_text)
+        original_text = _restore_text_markers(item.get("value", ""))
 
         bilingual_text = create_bilingual_text(original_text, translated_text)
 
@@ -5689,8 +5831,8 @@ def apply_smartart_translations_bilingual(temp_dir, original_data, translations,
                     if not translated_text:
                         continue
 
-                    translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
-                    original_text = item.get("value", "").replace("␊", "\n").replace("␍", "\r")
+                    translated_text = _restore_text_markers(translated_text)
+                    original_text = _restore_text_markers(item.get("value", ""))
 
                     bilingual_text = create_bilingual_text(original_text, translated_text)
 
@@ -5729,7 +5871,7 @@ def apply_smartart_translations_bilingual(temp_dir, original_data, translations,
                     if not translated_text:
                         continue
 
-                    translated_text = translated_text.replace("␊", "\n").replace("␍", "\r")
+                    translated_text = _restore_text_markers(translated_text)
                     original_text = item.get('original_text', '')
 
                     bilingual_text = create_bilingual_text(original_text, translated_text)

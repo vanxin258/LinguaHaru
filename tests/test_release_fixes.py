@@ -22,6 +22,28 @@ def test_placeholder_multiset_exact():
     assert not _machine_tokens_preserved("Hi %s", "你好")            # dropped
     assert not _machine_tokens_preserved("Hi %s", "你好 %s %s")       # extra
     assert _machine_tokens_preserved("Hi %s {count}", "%s 你好 {count}")
+    # tab placeholder: a dropped tab is a structural break, and the model's
+    # habit of returning "\\t" (two literal characters) must not pass either.
+    assert _placeholders_preserved("Zielgruppe␉Wartung", "目标群体␉维护人员")
+    assert not _placeholders_preserved("Zielgruppe␉Wartung", "目标群体 维护人员")
+    assert not _placeholders_preserved("Zielgruppe␉Wartung", "目标群体\\t维护人员")
+
+
+def test_placeholder_variants_normalized():
+    """Models hand back {HLINK_1}, {{ HLINK_1 }} or full-width braces: repair
+    those to the token the source used instead of retrying the item forever."""
+    from core.engine.translation_checker import (
+        normalize_placeholders, _placeholders_preserved)
+    src = "{{HLINK_1}}Docs{{/HLINK_1}} and {{HLINK_2}}more{{/HLINK_2}}"
+    for variant in ("{HLINK_1}文档{/HLINK_1} 和 {HLINK_2}更多{/HLINK_2}",
+                    "{{ HLINK_1 }}文档{{ /HLINK_1 }} 和 {{ HLINK_2 }}更多{{ /HLINK_2 }}",
+                    "｛｛HLINK_1｝｝文档｛｛/HLINK_1｝｝ 和 ｛｛HLINK_2｝｝更多｛｛/HLINK_2｝｝"):
+        fixed = normalize_placeholders(src, variant)
+        assert _placeholders_preserved(src, fixed), (variant, fixed)
+    # a marker the model really dropped is still rejected
+    assert not _placeholders_preserved(src, normalize_placeholders(src, "文档 和 更多"))
+    # ordinary braces in prose are left alone
+    assert normalize_placeholders("say {count}", "说 {count}") == "说 {count}"
 
 
 def test_last_try_structural_gating():

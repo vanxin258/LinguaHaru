@@ -72,23 +72,46 @@ def test_icu_plural():
     check("nested braces gone from masked", "{" not in masked and "}" not in masked, repr(masked))
 
 
-def test_reserved_markers_not_touched():
-    print("reserved pipeline markers must NOT collide")
+def test_reserved_markers_masked():
+    print("reserved pipeline markers are masked like machine tokens")
     text = "See {{HLINK_0}}real link{{/HLINK_0}} for {count} details"
     restored, masked, mapping = roundtrip(text)
-    check("HLINK marker preserved in masked", "{{HLINK_0}}" in masked and "{{/HLINK_0}}" in masked, repr(masked))
-    check("only {count} masked (one token)", len(mapping) == 1 and "{count}" in mapping.values(), str(mapping))
+    check("no brace text left in the masked string",
+          "{" not in masked and "}" not in masked, repr(masked))
+    check("both markers and {count} masked", len(mapping) == 3, str(mapping))
     check("round-trip preserves everything", restored == text, repr(restored))
 
-    # Other double-brace markers + formula + line markers stay intact
+    # [formula_n] and the line markers are not brace tokens: they stay as-is
     text2 = "{{INLINE_1}} {{FIELD: REF x}} [formula_2] line1␊line2 {x} {{FOOTNOTE_REF_3}}"
     r2, m2, map2 = roundtrip(text2)
-    check("inline/field/formula/footnote untouched, line marker kept",
-          "{{INLINE_1}}" in m2 and "{{FIELD: REF x}}" in m2 and "[formula_2]" in m2
-          and "␊" in m2 and "{{FOOTNOTE_REF_3}}" in m2, repr(m2))
-    check("only {x} masked in marker-heavy string",
-          len(map2) == 1 and "{x}" in map2.values(), str(map2))
+    check("every brace marker masked",
+          "{{INLINE_1}}" not in m2 and "{{FIELD: REF x}}" not in m2
+          and "{{FOOTNOTE_REF_3}}" not in m2 and "{x}" not in m2, repr(m2))
+    check("formula and line markers untouched", "[formula_2]" in m2 and "␊" in m2, repr(m2))
+    check("four brace tokens masked", len(map2) == 4, str(map2))
     check("marker-heavy round-trip", r2 == text2, repr(r2))
+
+
+def test_markers_masked_in_segment():
+    print("markers leave the prompt as sentinels and come back intact")
+    import re as _re
+    import core.llm.llm_wrapper as lw
+    from core.engine.placeholder_mask import _SENT_CLOSE
+    segment = ('```json\n{\n    "1": "See {{HLINK_1}}Docs{{/HLINK_1}} and '
+               '{{HLINK_2}}more{{/HLINK_2}}."\n}\n```')
+    masked, mapping = lw._mask_segment(segment)
+    check("no marker text in the masked segment", "HLINK" not in masked, masked)
+    check("all four markers masked", len(mapping.get("1", {})) == 4, str(mapping))
+    prompt_value = json.loads(lw._strip_json_fence(masked))["1"]
+    sentinels = _re.findall(_re.escape(_SENT_OPEN) + r"\d+" + _re.escape(_SENT_CLOSE),
+                            prompt_value)
+    check("sentinels stand where the markers were", len(sentinels) == 4, repr(prompt_value))
+    reply = json.dumps({"1": f"见{sentinels[0]}文档{sentinels[1]}和{sentinels[2]}更多{sentinels[3]}。"},
+                       ensure_ascii=False)
+    restored = json.loads(lw._unmask_reply(reply, mapping))["1"]
+    check("markers restored exactly",
+          restored == "见{{HLINK_1}}文档{{/HLINK_1}}和{{HLINK_2}}更多{{/HLINK_2}}。",
+          repr(restored))
 
 
 def test_unmask_robustness():
@@ -169,9 +192,9 @@ def test_wrapper_integration():
 
 def main():
     for fn in (test_printf, test_shell_vars, test_single_brace, test_icu_plural,
-               test_reserved_markers_not_touched, test_unmask_robustness,
-               test_no_token_fastpath, test_fake_translator_compat,
-               test_wrapper_integration):
+               test_reserved_markers_masked, test_markers_masked_in_segment,
+               test_unmask_robustness, test_no_token_fastpath,
+               test_fake_translator_compat, test_wrapper_integration):
         try:
             fn()
         except Exception:

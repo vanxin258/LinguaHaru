@@ -14,9 +14,12 @@ Design notes
 * Sentinels use Unicode Private-Use-Area delimiters U+E000 / U+E001 wrapping a
   decimal index, e.g. ``\\uE000 3 \\uE001``. PUA codepoints carry no linguistic
   meaning, so the model leaves them alone, and they can never collide with the
-  reserved pipeline markers (``{{...}}``, ``[formula_n]``, ``␊``/``␍``).
+  reserved pipeline markers (``{{...}}``, ``[formula_n]``, ``␊``/``␍``/``␉``).
 * The single-brace ``{...}`` matcher explicitly refuses to touch any
-  ``{{...}}`` double-brace marker (HLINK / INLINE / FIELD / FOOTNOTE / MATH).
+  ``{{...}}`` double-brace marker (HLINK / INLINE / FIELD / FOOTNOTE / MATH);
+  those are masked as their own token class instead, so the model can neither
+  translate them nor hand them back re-braced — the variants it used to produce
+  (``{HLINK_1}``, ``{{ HLINK_1 }}``, full-width braces) are gone at the source.
 * Masking is a no-op fast-path when a string has no detectable token (the
   overwhelming common case for normal prose) — zero behavior change there.
 * Honors the ``mask_placeholders`` flag in system_config (DEFAULT TRUE).
@@ -67,6 +70,12 @@ _PRINTF_RE = re.compile(
 # wins over $name.
 _SHELL_BRACED_RE = re.compile(r"\$\{[A-Za-z_]\w*\}")
 _SHELL_BARE_RE = re.compile(r"\$[A-Za-z_]\w*")
+
+# Reserved two-brace pipeline markers: {{HLINK_1}}/{{/HLINK_1}}, {{INLINE_2}},
+# {{FIELD: PAGE }}, {{FOOTNOTE_REF_3}}, {{SUP_1}}, … They are pipeline control
+# tokens, not text — masked like any other machine token so the model can
+# neither translate them nor rewrite their braces.
+_MARKER_RE = re.compile(r"\{\{[^{}]*\}\}")
 
 
 def _find_single_brace_spans(text):
@@ -136,7 +145,7 @@ def _token_spans(text):
     Shared by mask() and extract_tokens() so validation sees exactly what masking
     protected."""
     spans = []  # (start, end)
-    for rx in (_PRINTF_RE, _SHELL_BRACED_RE, _SHELL_BARE_RE):
+    for rx in (_PRINTF_RE, _SHELL_BRACED_RE, _SHELL_BARE_RE, _MARKER_RE):
         for m in rx.finditer(text):
             spans.append((m.start(), m.end()))
     spans.extend(_find_single_brace_spans(text))

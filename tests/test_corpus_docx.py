@@ -264,11 +264,22 @@ def test_tab_br_roundtrip():
           "<w:tab/>" in xml and not re.search(r"<w:t[^>]*>[^<]*\t", xml), xml[:1000])
     check("break restored as a real w:br element", "<w:br/>" in xml, xml[:1000])
     check("no newline markers leaked", "␊" not in xml and "␍" not in xml, xml[:1000])
+    # The model must never see a tab: JSON would show it as the backslash-t
+    # escape and a double-escaped reply becomes two literal characters.
+    check("tab travels as the ␉ placeholder, no tab placeholder leaks out",
+          "␉" not in xml and "\\t" not in xml, xml[:1000])
     check("text segments in order around tab",
           para.find("Column one header") < para.find("\t") < para.find("Column two header"),
           repr(para))
     check("post-break text present", "Second visual line text" in "".join(paras),
           str(paras))
+
+    from core.pipelines.word_translation_pipeline import extract_word_content_to_json
+    with open(extract_word_content_to_json(src, TEMP_DIR), encoding="utf-8") as f:
+        values = [i["value"] for i in json.load(f)]
+    check("extracted value holds the ␉ placeholder, never a raw tab",
+          any("␉" in v for v in values) and not any("\t" in v for v in values),
+          repr(values))
 
 
 def test_long_paragraph_chunk_rejoin():
@@ -436,7 +447,59 @@ def test_textbox_raw_xml():
           T + "Body paragraph beside the textbox." in xml, xml[:600])
 
 
+def test_inline_image_caption_runs():
+    print("DOCX: caption after an inline image keeps its own run formatting")
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from lxml import etree
+
+    src = os.path.join(WORK_DIR, "img_caption.docx")
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run().add_picture(make_png(os.path.join(WORK_DIR, "icon.png")),
+                            width=Inches(0.2))
+    # PDF converters emit the icon and its caption as separate runs, with the
+    # separating space carrying its own (smaller, plain) formatting.
+    sep = p.add_run(" ")
+    sep.font.name = "Times New Roman"
+    sep.font.size = Pt(10)
+    caption = p.add_run("VORSICHT")
+    caption.bold = True
+    caption.font.size = Pt(12)
+    caption.font.color.rgb = RGBColor(0x23, 0x1F, 0x20)
+    doc.save(src)
+
+    out = translate_docx(src)
+    xml = doc_xml(out)
+    tree = etree.fromstring(xml.encode("utf-8"))
+    para = next(p for p in tree.iter(f"{{{W_NS}}}p")
+                if "VORSICHT" in "".join(t.text or "" for t in p.iter(f"{{{W_NS}}}t")))
+    styled = []
+    for run in para.findall(f"{{{W_NS}}}r"):
+        text = "".join(t.text or "" for t in run.iter(f"{{{W_NS}}}t"))
+        if not text.strip():
+            continue
+        rPr = run.find(f"{{{W_NS}}}rPr")
+        sz = rPr.find(f"{{{W_NS}}}sz") if rPr is not None else None
+        styled.append((text,
+                       rPr is not None and rPr.find(f"{{{W_NS}}}b") is not None,
+                       sz.get(f"{{{W_NS}}}val") if sz is not None else None))
+    check("inline-image caption translated",
+          T + "VORSICHT" in "".join(s for s, _, _ in styled), str(styled))
+    # The separator space must not receive translated characters: its plain
+    # 10pt formatting used to land on the first character.
+    check("every caption character keeps the caption run's bold/size",
+          all(bold and size == "24" for _, bold, size in styled), str(styled))
+    para_text = "".join(t.text or "" for t in para.iter(f"{{{W_NS}}}t"))
+    check("gap between the icon and the caption is kept",
+          para_text.startswith(" "), repr(para_text))
+    check("inline image drawing survives",
+          "<w:drawing" in xml and "<w:drawing" in etree.tostring(para, encoding="unicode"),
+          xml[:400])
+
+
 if __name__ == "__main__":
     run([test_nested_tables_and_merges, test_hyperlinks_and_cell_with_image,
          test_multilevel_numbered_lists, test_tab_br_roundtrip,
-         test_long_paragraph_chunk_rejoin, test_cjk_latin_mixed, test_textbox_raw_xml])
+         test_long_paragraph_chunk_rejoin, test_cjk_latin_mixed, test_textbox_raw_xml,
+         test_inline_image_caption_runs])
