@@ -221,6 +221,16 @@
       </div>
     </div>
 
+    <div id="mykey-modal" class="modal-overlay" hidden>
+      <div class="modal">
+        <h3 data-i18n="Use My Own API Key">使用我自己的密钥</h3>
+        <p class="muted" data-i18n="My Key Stays In This Page">密钥只保存在当前页面的内存里：刷新或关闭页面即清除，服务器不会保存。仅对管理员已配置的接口生效。</p>
+        <div id="mykey-httpwarn" class="admin-msg bad" hidden data-i18n="My Key Over HTTP">当前页面通过 HTTP 访问，密钥会以明文经过网络，建议启用 HTTPS。</div>
+        <div class="field"><label data-i18n="API Key">API 密钥</label><input id="mykey-pw" type="password" autocomplete="off" spellcheck="false" /></div>
+        <div class="modal-actions"><span style="flex:1"></span><button id="mykey-cancel" data-i18n="Cancel">取消</button><button id="mykey-ok" class="primary" data-i18n="Confirm">确定</button></div>
+      </div>
+    </div>
+
     <!-- First-run onboarding: interactive spotlight tour -->
     <div id="tour" hidden>
       <div id="tour-backdrop"></div>
@@ -279,6 +289,14 @@
         <div class="card row-2">
           <div class="field"><label data-i18n="Model">模型</label><select id="model"></select></div>
           <div class="field"><label data-i18n="Glossary">词汇表</label><select id="glossary"></select></div>
+        </div>
+
+        <!-- Per-user API key: memory only, never persisted (see app.js MEM_KEYS). -->
+        <div id="mykey-row" class="card" hidden>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <button id="mykey-btn" class="mini" data-i18n="Use My Own API Key">使用我自己的密钥</button>
+            <span id="mykey-state" class="muted" hidden data-i18n="Key Set In This Page">本页已使用你自己的密钥</span>
+          </div>
         </div>
 
         <div class="card" data-feat="bilingual">

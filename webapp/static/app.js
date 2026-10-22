@@ -1027,11 +1027,81 @@ function renderDropBg() {
 }
 
 // ----- API key state -----
+// Per-user API keys live in PAGE MEMORY ONLY (never localStorage/sessionStorage):
+// a reload or tab close clears them, and the server never stores what the browser
+// sends. Each entry is keyed by PROVIDER, mirroring the server's per-provider
+// key files, so one key covers every model from that company.
+const MEM_KEYS = new Map();   // provider -> key, gone on page reload
+
+function providerOf(model) {
+  const s = (model || "").trim();
+  if (!s) return "default";
+  if (s.startsWith("(") && s.includes(")")) return s.slice(1, s.indexOf(")")).trim() || "default";
+  return s;
+}
+
+function myKeyFor(model) {
+  return MEM_KEYS.get(providerOf(model)) || "";
+}
+
+// The interface the server uses for quick text / live voice is its ACTIVE model,
+// not this page's model picker.
+function _activeModel() {
+  return (BOOT.config && BOOT.config.default_online_model) || "";
+}
+
+// Request headers carrying this page's own key ({} when none is set).
+function _myKeyHeaders(model) {
+  const k = myKeyFor(model);
+  return k ? { "X-Api-Key": k } : {};
+}
+
+function updateMyKeyState() {
+  const row = $("mykey-row");
+  if (!row) return;
+  row.hidden = BOOT.server_mode || !useOnline();
+  $("mykey-state").hidden = !myKeyFor($("model").value);
+}
+
+function askMyKey() {
+  return new Promise((resolve) => {
+    const m = $("mykey-modal");
+    if (!m) { resolve(null); return; }
+    $("mykey-pw").value = "";
+    // A key over plain HTTP crosses the network in the clear — say so.
+    const insecure = location.protocol === "http:" &&
+      !["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+    $("mykey-httpwarn").hidden = !insecure;
+    m.hidden = false;
+    $("mykey-pw").focus();
+    const done = (val) => {
+      m.hidden = true;
+      $("mykey-ok").onclick = null; $("mykey-cancel").onclick = null; $("mykey-pw").onkeydown = null;
+      resolve(val);
+    };
+    $("mykey-ok").onclick = () => done($("mykey-pw").value.trim());
+    $("mykey-cancel").onclick = () => done(null);
+    $("mykey-pw").onkeydown = (e) => { if (e.key === "Enter") done($("mykey-pw").value.trim()); };
+  });
+}
+
+if ($("mykey-btn")) $("mykey-btn").onclick = async () => {
+  const provider = providerOf($("model").value);
+  const v = await askMyKey();
+  if (v === null) return;
+  if (v) MEM_KEYS.set(provider, v); else MEM_KEYS.delete(provider);
+  updateMyKeyState();
+  refreshApiKeyState();
+  toast(v ? _label("Key Set In This Page", "本页已使用你自己的密钥")
+          : _label("API Key Removed", "已清除本页密钥"), v ? "ok" : "");
+};
+
 async function refreshApiKeyState() {
+  updateMyKeyState();
   if (BOOT.server_mode) { $("apikey-warning").hidden = true; return; }
   const online = useOnline();
   const model = $("model").value;
-  if (!online) { $("apikey-warning").hidden = true; return; }
+  if (!online || myKeyFor(model)) { $("apikey-warning").hidden = true; return; }
   const st = await api("/api/apikey?model=" + encodeURIComponent(model));
   $("apikey-warning").hidden = st.has_key;
 }
@@ -1278,7 +1348,8 @@ $("translate-btn").onclick = async () => {
   if (clientLog.length) fd.append("client_log", JSON.stringify(clientLog));
 
   try {
-    const { task_id } = await api("/api/translate", { method: "POST", body: fd });
+    const { task_id } = await api("/api/translate", {
+      method: "POST", body: fd, headers: _myKeyHeaders($("model").value) });
     currentTask = task_id;
     listenProgress(task_id);
   } catch (e) { setRunState("idle"); setStatus(_label("错误: ", "错误: ") + e.message); }
@@ -1414,9 +1485,9 @@ function _apiKeyMissingMsg(model) {
   const lang = localStorage.getItem("lh-lang") || "zh";
   const m = model || "";
   if (lang.startsWith("zh")) {
-    return `当前模型「${m}」尚未配置 API 密钥。请到「接口管理」双击该接口填写密钥，或改用已配置密钥的接口。`;
+    return `当前模型「${m}」尚未配置 API 密钥。可点「使用我自己的密钥」在本页填写（仅存于本页内存），或由管理员在「接口管理」为该接口配置密钥。`;
   }
-  return `The selected model "${m}" has no API key. Open Interface Management, double-click it to set its key, or switch to an interface that already has one.`;
+  return `The selected model "${m}" has no API key. Click "Use My Own API Key" to enter one for this page (kept in page memory only), or have an admin set it in Interface Management.`;
 }
 
 // Compact coverage panel: "正文 80 · 表格 20 · 批注 10 · 0 未翻译".
@@ -2994,7 +3065,8 @@ async function _doCommitSentence(source) {
   if (!streaming) {
     try {
       const t = await api("/api/live-translate-text", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, _myKeyHeaders(_activeModel())),
         body: JSON.stringify({ source, src_lang: liveLastDetected || "auto", dst_lang: dst, context: ctx }) });
       liveSessionTokens += (t.tokens || 0);
       if (t.translated) appendLive("live-output", `[${ts}] ${t.translated}\n`);
@@ -3015,7 +3087,8 @@ async function _doCommitSentence(source) {
   };
   try {
     const resp = await fetch("/api/live-translate-stream", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, _myKeyHeaders(_activeModel())),
       body: JSON.stringify({ source, src_lang: liveLastDetected || "auto", dst_lang: dst, context: ctx }) });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -3274,7 +3347,7 @@ function buildHistoryDetail(r) {
     _histActBtn(acts, _label("Download Log", "下载日志"),
       () => window.open("/api/history/log?id=" + encodeURIComponent(r.id), "_blank"));
   }
-  if (_histResumable(r)) _histActBtn(acts, _label("Continue Translation", "继续翻译"), () => resumeHistory(r.id), "primary");
+  if (_histResumable(r)) _histActBtn(acts, _label("Continue Translation", "继续翻译"), () => resumeHistory(r), "primary");
   _histActBtn(acts, _label("Delete Record", "删除"), () => deleteHistory(r.id), "danger");
   box.appendChild(acts);
   return box;
@@ -3311,7 +3384,7 @@ function buildBatchDetail(recs) {
     if (_histResumable(r)) {
       const b = document.createElement("button"); b.type = "button"; b.className = "hist-act primary";
       b.textContent = _label("Continue Translation", "继续翻译");
-      b.onclick = (e) => { e.stopPropagation(); resumeHistory(r.id); };
+      b.onclick = (e) => { e.stopPropagation(); resumeHistory(r); };
       row.appendChild(b);
     }
     list.appendChild(row);
@@ -3398,11 +3471,14 @@ async function loadHistory() {
   }
 }
 
-async function resumeHistory(id) {
+async function resumeHistory(rec) {
+  const id = rec && rec.id !== undefined ? rec.id : rec;
   try {
     const lang = localStorage.getItem("lh-lang") || "zh";
     const { task_id } = await api("/api/history/resume", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" },
+                                _myKeyHeaders(rec && rec.model)),
       body: JSON.stringify({ id, ui_lang: lang }),
     });
     // Jump back to the translate panel's dashboard (Qt parity: continuing a
@@ -3426,7 +3502,9 @@ async function resumeBatch(recs) {
   try {
     const lang = localStorage.getItem("lh-lang") || "zh";
     const { task_id } = await api("/api/history/resume-batch", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" },
+                                _myKeyHeaders((recs[0] || {}).model)),
       body: JSON.stringify({ ids, ui_lang: lang }),
     });
     const tab = document.querySelector('.tab[data-tab="translate"]');
@@ -3523,7 +3601,8 @@ async function quickTranslate() {
   $("quick-status").textContent = _label("Translate", "翻译") + "…";
   try {
     const r = await api("/api/quick-translate", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, _myKeyHeaders(_activeModel())),
       body: JSON.stringify({ text, src_lang: $("quick-src").value, dst_lang: $("quick-dst").value, context: ($("quick-context") ? $("quick-context").value.trim() : "") }) });
     $("quick-output").textContent = r.translated || "";
     $("quick-status").textContent = "";

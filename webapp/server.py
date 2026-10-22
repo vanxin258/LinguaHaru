@@ -292,6 +292,29 @@ def _feature_hidden(key):
     return key in set(backend.get_config("lan_hidden_features", []) or [])
 
 
+# --- per-request API key (browser memory only) ------------------------------ #
+# A LAN user may translate with their OWN key instead of the server's stored one.
+# The browser keeps it in page memory and sends it as X-Api-Key when a task
+# starts; it is never written to disk, never logged, and never accepted in
+# server mode (where the server owns the key).
+MAX_CLIENT_KEY_LEN = 512
+
+
+def _client_api_key(request):
+    """The caller's own key for this request, or "" (server mode: always "")."""
+    if request is None or server_mode_on():
+        return ""
+    return (request.headers.get("x-api-key") or "").strip()[:MAX_CLIENT_KEY_LEN]
+
+
+def _resolve_translation_key(model, use_online, client_key=""):
+    """Client's own key first, then the server's stored key, then the env key."""
+    if not use_online:
+        return ""
+    return (client_key or load_api_key_for_model(model)
+            or os.environ.get("LINGUAHARU_API_KEY", ""))
+
+
 def _block_in_server_mode():
     """Guard admin-only endpoints (changing the server's model/key, RPM, modules,
     interfaces). Always blocked in public server mode.
@@ -997,23 +1020,23 @@ def _translate_one(task_id, session_id, file_path, model, use_online, src_lang,
                    dst_lang, glossary_name, bilingual_flags, on_progress,
                    continue_mode=False, resume_dirs=None, resume_record_id=None,
                    run_subdir=None, translation_id=None, batch_id=None, batch_size=None,
-                   client_events=None):
+                   client_events=None, client_api_key=""):
     """Translate a single file; returns its output path. Raises on failure.
 
     Paths are scoped to ``session_id`` so concurrent users never collide, and a
     stop is honored either per-task (this run) or per-session (the caller hit
     Stop / disconnected). When ``resume_dirs`` is given (a Continue from History)
-    the run reuses that interrupted task's exact dirs in continue_mode."""
+    the run reuses that interrupted task's exact dirs in continue_mode.
+    ``client_api_key`` is the caller's own key for THIS run (page memory only)."""
     ext = os.path.splitext(file_path)[1]
     stem = os.path.splitext(file_path)[0]
     translator_class = backend.get_translator_class(ext, file_path=file_path, **bilingual_flags)
     if translator_class is None:
         raise ValueError(f"Unsupported file type '{ext}'.")
 
-    # In server mode the key comes from the server (mykeys, or LINGUAHARU_API_KEY
-    # for a keyless Render deploy) — public users never supply one.
-    api_key = (load_api_key_for_model(model)
-               or os.environ.get("LINGUAHARU_API_KEY", "")) if use_online else ""
+    # The caller's own key wins; otherwise the server's stored key, then the
+    # env key for a keyless public deploy (server mode never gets a client key).
+    api_key = _resolve_translation_key(model, use_online, client_api_key)
     src_code = backend.language_code(src_lang)
     dst_code = backend.language_code(dst_lang)
     gpath = backend.glossary_path(glossary_name) if glossary_name else None
@@ -1214,7 +1237,7 @@ def _run_with_power(fn, *args):
 
 def _run_translation(task_id, session_id, file_paths, model, use_online,
                      src_lang, dst_lang, glossary_name, bilingual_flags, ui_lang="en",
-                     client_events=None):
+                     client_events=None, client_api_key=""):
     """Background worker: translate one or more files; zip when more than one."""
     def set_state(**kw):
         with _TASKS_LOCK:
@@ -1269,7 +1292,8 @@ def _run_translation(task_id, session_id, file_paths, model, use_online,
                 dst_lang, glossary_name, bilingual_flags, on_progress,
                 run_subdir=(f"{run_folder}/{idx}" if need_iso else run_folder),
                 translation_id=file_ids[idx], batch_id=task_id, batch_size=total,
-                client_events=(client_events if idx == 0 else None))
+                client_events=(client_events if idx == 0 else None),
+                client_api_key=client_api_key)
             res_slot[idx] = (name, "success", "")
         except HardApiError as e:
             # Account-level fault (balance/invalid key): abort the whole batch
@@ -1431,7 +1455,8 @@ async def translate(
     threading.Thread(target=_run_with_power, args=(
         _run_translation,
         task_id, session_id, dests, model, use_online, src_lang, dst_lang,
-        glossary, flags, ui_lang, client_events), daemon=True).start()
+        glossary, flags, ui_lang, client_events, _client_api_key(request)),
+        daemon=True).start()
     return {"task_id": task_id}
 
 
@@ -1584,7 +1609,7 @@ def history_clear(request: Request, payload: dict = None):
     return {"ok": bool(h.clear_all_records())}
 
 
-def _run_resume(task_id, session_id, rec, ui_lang="en"):
+def _run_resume(task_id, session_id, rec, ui_lang="en", client_api_key=""):
     """Background worker: continue an interrupted translation from its record."""
     def set_state(**kw):
         with _TASKS_LOCK:
@@ -1612,7 +1637,7 @@ def _run_resume(task_id, session_id, rec, ui_lang="en"):
             info.get("glossary_name", ""), info.get("bilingual_flags", {}),
             on_progress, continue_mode=True,
             resume_dirs=(info["temp_dir"], info["result_dir"], info["log_dir"]),
-            resume_record_id=rec.get("id"))
+            resume_record_id=rec.get("id"), client_api_key=client_api_key)
         with _TASKS_LOCK:
             t = TASKS.get(task_id, {})
             tt = t.get("tokens", 0)
@@ -1670,12 +1695,13 @@ def history_resume(payload: dict, request: Request):
         TASKS[task_id] = {"progress": 0.0, "desc": "Queued...", "status": "running",
                           "output": None, "error": None, "stop": False,
                           "paused": False, "session_id": sid}
-    threading.Thread(target=_run_with_power, args=(_run_resume, task_id, sid, rec, ui_lang),
-                     daemon=True).start()
+    threading.Thread(target=_run_with_power, args=(
+        _run_resume, task_id, sid, rec, ui_lang, _client_api_key(request)),
+        daemon=True).start()
     return {"task_id": task_id}
 
 
-def _run_resume_batch(task_id, session_id, recs, ui_lang="en"):
+def _run_resume_batch(task_id, session_id, recs, ui_lang="en", client_api_key=""):
     """Continue MULTIPLE records (a whole batch) as one task, processed
     sequentially — mirrors _run_translation but resumes each record from its own
     resume_info (continue_mode if it has dirs, else a fresh run reusing its id)."""
@@ -1719,7 +1745,8 @@ def _run_resume_batch(task_id, session_id, recs, ui_lang="en"):
                     resume_record_id=rec.get("id"),
                     run_subdir=(run_folder if fresh else None),
                     batch_id=rec.get("batch_id") or None,
-                    batch_size=rec.get("batch_size") or total))
+                    batch_size=rec.get("batch_size") or total,
+                    client_api_key=client_api_key))
                 file_results.append((name, "success", ""))
             except HardApiError as e:
                 set_state(status="error", error=_friendly_api_error(e, ui_lang))
@@ -1791,8 +1818,9 @@ def history_resume_batch(payload: dict, request: Request):
         TASKS[task_id] = {"progress": 0.0, "desc": "Queued...", "status": "running",
                           "output": None, "error": None, "stop": False,
                           "paused": False, "session_id": sid}
-    threading.Thread(target=_run_with_power, args=(_run_resume_batch, task_id, sid, recs, ui_lang),
-                     daemon=True).start()
+    threading.Thread(target=_run_with_power, args=(
+        _run_resume_batch, task_id, sid, recs, ui_lang, _client_api_key(request)),
+        daemon=True).start()
     return {"task_id": task_id}
 
 
@@ -2356,7 +2384,7 @@ async def live_recognize(payload: dict, request: Request):
 
 
 @app.post("/api/live-translate-text")
-async def live_translate_text(payload: dict):
+async def live_translate_text(payload: dict, request: Request):
     """Step 2 of local live voice: translate a recognized line. Model/online are
     taken from the ACTIVE interface (no Settings checkbox)."""
     if _feature_hidden("live"):
@@ -2370,8 +2398,7 @@ async def live_translate_text(payload: dict):
     cfg = backend.read_config()
     use_online = bool(cfg.get("default_online", True))
     model = backend.get_active_model(use_online=use_online)
-    api_key = (load_api_key_for_model(model)
-               or os.environ.get("LINGUAHARU_API_KEY", "")) if use_online else ""
+    api_key = _resolve_translation_key(model, use_online, _client_api_key(request))
     from core.llm.llm_wrapper import translate_text_simple
     # Glossary terms present in this sentence ride along as context, so proper
     # nouns stay consistent (same terms as document translation).
@@ -2447,7 +2474,7 @@ def ensure_web_vad():
 
 
 @app.post("/api/live-translate-stream")
-def live_translate_stream(payload: dict):
+def live_translate_stream(payload: dict, request: Request):
     """Stream a live-caption translation token-by-token (SSE). Each event is a
     JSON-encoded cumulative string; ends with [DONE]. Online-only; the generator
     falls back to a single chunk offline/on failure."""
@@ -2465,8 +2492,7 @@ def live_translate_stream(payload: dict):
     cfg = backend.read_config()
     use_online = bool(cfg.get("default_online", True))
     model = backend.get_active_model(use_online=use_online)
-    api_key = (load_api_key_for_model(model)
-               or os.environ.get("LINGUAHARU_API_KEY", "")) if use_online else ""
+    api_key = _resolve_translation_key(model, use_online, _client_api_key(request))
 
     def gen():
         if source:
@@ -2537,10 +2563,12 @@ async def quick_translate_api(payload: dict, request: Request):
     dst_lang = payload.get("dst_lang", "en")
     context = (payload.get("context") or "").strip()[:300]
     from core import quick_translate
+    from functools import partial
     loop = asyncio.get_event_loop()
     try:
         translated, ok = await loop.run_in_executor(
-            None, quick_translate.translate, text, src_lang, dst_lang, context)
+            None, partial(quick_translate.translate, text, src_lang, dst_lang, context,
+                          client_api_key=_client_api_key(request)))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"Translate failed: {e}")
     history = []
